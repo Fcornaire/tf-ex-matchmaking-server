@@ -3,7 +3,6 @@ FROM rust:1.68.1 as build
 RUN USER=root cargo new --bin holy
 WORKDIR /holy
 
-COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 RUN cargo build --release
 
