@@ -1,18 +1,9 @@
-FROM rust:1.68.1 as build
+FROM rust:latest
 
-RUN USER=root cargo new --bin holy
-WORKDIR /holy
+COPY . /app
+WORKDIR /app
 
-COPY ./Cargo.toml ./Cargo.toml
+RUN cargo update
 RUN cargo build --release
 
-RUN rm src/*.rs
-COPY ./src ./src
-
-RUN rm ./target/release/deps/holy/*
-RUN cargo build --release
-
-FROM debian:buster-slim
-COPY --from=build /holy/target/release/holy .
-
-CMD ["./holy"]
+CMD ["./target/release/tf-matchmaking-server"]
