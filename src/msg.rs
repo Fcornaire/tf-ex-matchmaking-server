@@ -8,7 +8,7 @@ pub enum ServerMsg {
     },
     Opponent {
         opponent_addr: String,
-        local_port: u16,
+        local: String,
         is_server: bool,
     },
 }

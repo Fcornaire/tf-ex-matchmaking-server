@@ -183,7 +183,7 @@ async fn handle_socket(
                         .send(Message::Item(ServerMsg::Opponent {
                             opponent_addr: addr.to_string(),
                             is_server,
-                            local_port: who.port(),
+                            local: who.to_string(),
                         }))
                         .await
                         .unwrap();
