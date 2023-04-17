@@ -6,10 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-trait = "0.1.68"
 axum =  { version = "0.6.15",features = ["ws", "headers"]  } 
+axum-typed-websockets = { version = "0.5.0", features = ["serde_json"] }
 futures = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 headers = "0.3"
+rand = "0.8.5"
+serde = { version = "1.0.160", features = ["derive"] }
+serde_json = "1.0.96"
 tokio = { version = "1.27.0", features = ["full"] }
 tokio-tungstenite = "0.18.0"
 tower = { version = "0.4", features = ["util"] }
