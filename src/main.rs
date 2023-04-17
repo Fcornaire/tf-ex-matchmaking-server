@@ -4,6 +4,7 @@ use axum::{
     routing::get,
     Router,
 };
+use futures::{SinkExt, StreamExt};
 use msg::{ClientMsg, ServerMsg};
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -12,9 +13,14 @@ use tower_http::{
     trace::{DefaultMakeSpan, TraceLayer},
 };
 
+use tokio::{
+    sync::mpsc,
+    time::{self, Duration},
+};
+
 use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
 
-use crate::state::{AppState, DirectClientsExts};
+use crate::state::{AppState, Clients, ClientsExts};
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -49,7 +55,7 @@ async fn main() {
         )
         .with_state(state.clone());
 
-    let mut server = tokio::spawn(async move {
+    let mut server_task = tokio::spawn(async move {
         let port = std::env::var("PORT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -64,16 +70,11 @@ async fn main() {
         tracing::debug!("listening on {}", addr);
     });
 
-    let mut jobs = tokio::spawn(async move {
-        if let Err(join_error) = spawn_jobs(state.clone()).await {
-            println!("Error spawning jobs: {:?}", join_error);
-            return;
-        }
-    });
+    let mut jobs_task = tokio::spawn(async move { spawn_jobs(state.clone()).await });
 
     tokio::select! {
-        _ = (&mut server) => {},
-        _ = (&mut jobs) => {},
+        _ = (&mut server_task) => {jobs_task.abort()},
+        _ = (&mut jobs_task) => {server_task.abort()},
     }
 }
 
@@ -100,42 +101,106 @@ async fn ws_handler(
 
 /// Actual websocket statemachine (one will be spawned per connection)
 async fn handle_socket(
-    mut socket: WebSocket<ServerMsg, ClientMsg>,
+    socket: WebSocket<ServerMsg, ClientMsg>,
     who: SocketAddr,
     state: Arc<AppState>,
 ) {
-    while let Some(msg) = socket.recv().await {
-        return match msg {
-            Ok(Message::Item(ClientMsg::RegisterDirect)) => {
-                let registered = &mut state.clients_registered_for_direct.clone();
+    let (mut sink, mut stream) = socket.split();
+    let (sender, mut receiver) = mpsc::channel::<Message<ServerMsg>>(16);
 
-                let result = registered.register_direct_async(who).await;
+    // spawn a task that forwards messages from the mpsc to the sink
+    tokio::spawn(async move {
+        while let Some(message) = receiver.recv().await {
+            if sink.send(message.into()).await.is_err() {
+                break;
+            }
+        }
+    });
 
-                if !result {
-                    socket
+    let cloned_state_recv = state.clone();
+    let cloned_state_send = state.clone();
+
+    let send_task_in_rcv = sender.clone();
+    let send_task_in_send = sender.clone();
+
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(msg) = stream.next().await {
+            match msg {
+                Ok(Message::Item(ClientMsg::RegisterDirect)) => {
+                    let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
+
+                    let result = clients.register_direct_async(who).await;
+
+                    if !result {
+                        send_task_in_rcv
+                            .send(Message::Item(ServerMsg::RegisterResponse {
+                                success: false,
+                                details: String::from("Registration failed"),
+                            }))
+                            .await
+                            .unwrap();
+                        break;
+                    }
+
+                    println!("Client {} registered for direct", who);
+                    send_task_in_rcv
                         .send(Message::Item(ServerMsg::RegisterResponse {
-                            success: false,
-                            details: String::from("Registration failed"),
+                            success: true,
+                            details: String::from("Welcome to the server!"),
                         }))
                         .await
                         .unwrap();
-                    break;
                 }
+                Ok(Message::Close(_fame)) => {
+                    println!("Client {} closed connection", who);
+                    return;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::error!("got error: {}", err);
+                }
+            };
+        }
+    });
 
-                println!("Client {} registered for direct", who);
-                socket
-                    .send(Message::Item(ServerMsg::RegisterResponse {
-                        success: true,
-                        details: String::from("Welcome to the server!"),
-                    }))
-                    .await
-                    .unwrap();
+    let mut send_task = tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(9));
+
+        loop {
+            interval.tick().await;
+
+            let clients: &mut Clients = &mut cloned_state_send.clients.clone();
+            let current_socket = clients.get_client(who).await;
+
+            if let Some(client) = current_socket {
+                if let Some(addr) = client.get_addr() {
+                    let mut is_server = false;
+                    if let Some(is_srv) = client.is_server() {
+                        is_server = is_srv;
+                    }
+
+                    send_task_in_send
+                        .send(Message::Item(ServerMsg::Opponent {
+                            opponent_addr: addr.to_string(),
+                            is_server,
+                            local_port: who.port(),
+                        }))
+                        .await
+                        .unwrap();
+
+                    clients.remove_client(who).await;
+                }
             }
-            Ok(_) => {}
-            Err(err) => {
-                tracing::error!("got error: {}", err);
-            }
-        };
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut send_task) => {
+            recv_task.abort();
+        },
+        _ = (&mut recv_task) => {
+            send_task.abort();
+        }
     }
 
     println!("Websocket context {} destroyed", who);
