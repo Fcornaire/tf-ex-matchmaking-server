@@ -8,7 +8,7 @@ use tokio::time::{self, Duration};
 use crate::state::AppState;
 
 async fn monitor(state: Arc<AppState>) {
-    let mut interval = time::interval(Duration::from_secs(30));
+    let mut interval = time::interval(Duration::from_secs(10));
     loop {
         interval.tick().await;
         println!("App: {:?}", state);
@@ -16,7 +16,7 @@ async fn monitor(state: Arc<AppState>) {
 }
 
 async fn direct_work_async(state: Arc<AppState>) {
-    let mut interval = time::interval(Duration::from_secs(10));
+    let mut interval = time::interval(Duration::from_secs(2));
     loop {
         interval.tick().await;
         let arc = state.clients.clone();
@@ -24,7 +24,7 @@ async fn direct_work_async(state: Arc<AppState>) {
 
         if clients.len() == 2 {
             let keys = clients.keys().cloned().collect::<Vec<_>>();
-            // let values = clients.values().cloned().collect::<Vec<_>>();
+            let values = clients.values().cloned().collect::<Vec<_>>();
 
             //TODO: implements
 
@@ -32,11 +32,11 @@ async fn direct_work_async(state: Arc<AppState>) {
             let is_server = rng.gen_range(0..2) == 0;
 
             let fst = clients.get_mut(&keys[0]).unwrap();
-            fst.set_addr(keys[1]);
+            fst.set_matched(values[1].public_ip);
             fst.set_is_server(is_server);
 
             let snd = clients.get_mut(&keys[1]).unwrap();
-            snd.set_addr(keys[0]);
+            snd.set_matched(values[0].public_ip);
             snd.set_is_server(!is_server);
         }
     }

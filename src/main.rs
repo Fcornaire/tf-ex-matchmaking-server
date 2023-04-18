@@ -106,7 +106,7 @@ async fn ws_handler(
 /// Actual websocket statemachine (one will be spawned per connection)
 async fn handle_socket(
     socket: WebSocket<ServerMsg, ClientMsg>,
-    who: SocketAddr,
+    private_ip: SocketAddr,
     state: Arc<AppState>,
 ) {
     let (mut sink, mut stream) = socket.split();
@@ -130,10 +130,12 @@ async fn handle_socket(
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
             match msg {
-                Ok(Message::Item(ClientMsg::RegisterDirect)) => {
+                Ok(Message::Item(ClientMsg::RegisterDirect { addr })) => {
                     let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
 
-                    let result = clients.register_direct_async(who).await;
+                    let who: SocketAddr = addr.parse().unwrap();
+
+                    let result = clients.register_direct_async(private_ip, who).await;
 
                     if !result {
                         send_task_in_rcv
@@ -156,7 +158,7 @@ async fn handle_socket(
                         .unwrap();
                 }
                 Ok(Message::Close(_fame)) => {
-                    println!("Client {} closed connection", who);
+                    println!("Client {} closed connection", private_ip);
                     return;
                 }
                 Ok(_) => {}
@@ -174,23 +176,24 @@ async fn handle_socket(
             interval.tick().await;
 
             let clients: &mut Clients = &mut cloned_state_send.clients.clone();
-            let current_socket = clients.get_client(who).await;
+            let current_socket = clients.get_client(private_ip).await;
 
             if let Some(client) = current_socket {
-                if let Some(addr) = client.get_addr() {
+                if let Some(addr) = client.matched {
                     let mut is_server = false;
                     if let Some(is_srv) = client.is_server() {
                         is_server = is_srv;
                     }
 
                     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-                    let res = hole_punch_connect::server::make_match(&socket, addr, who);
+                    let res =
+                        hole_punch_connect::server::make_match(&socket, addr, client.public_ip);
                     match res {
                         Ok(_) => {
-                            println!("Matched {} with {}", who, addr);
+                            println!("Matched {} with {}", client.public_ip, addr);
                         }
                         Err(e) => {
-                            println!("Error matching {} with {}: {}", who, addr, e);
+                            println!("Error matching {} with {}: {}", client.public_ip, addr, e);
                         }
                     }
 
@@ -198,12 +201,12 @@ async fn handle_socket(
                         .send(Message::Item(ServerMsg::Opponent {
                             opponent_addr: addr.to_string(),
                             is_server,
-                            local: who.to_string(),
+                            local: private_ip.to_string(),
                         }))
                         .await
                         .unwrap();
 
-                    clients.remove_client(who).await;
+                    clients.remove_client(private_ip).await;
                 }
             }
         }
@@ -218,5 +221,7 @@ async fn handle_socket(
         }
     }
 
-    println!("Websocket context {} destroyed", who);
+    //TODO: remove client from state
+
+    println!("Websocket context {} destroyed", private_ip);
 }

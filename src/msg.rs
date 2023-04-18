@@ -15,5 +15,5 @@ pub enum ServerMsg {
 
 #[derive(Debug, Deserialize)]
 pub enum ClientMsg {
-    RegisterDirect,
+    RegisterDirect { addr: String },
 }
