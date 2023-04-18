@@ -7,7 +7,11 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use msg::{ClientMsg, ServerMsg};
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::{SocketAddr, UdpSocket},
+    path::PathBuf,
+    sync::Arc,
+};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
@@ -177,6 +181,17 @@ async fn handle_socket(
                     let mut is_server = false;
                     if let Some(is_srv) = client.is_server() {
                         is_server = is_srv;
+                    }
+
+                    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+                    let res = hole_punch_connect::server::make_match(&socket, addr, who);
+                    match res {
+                        Ok(_) => {
+                            println!("Matched {} with {}", who, addr);
+                        }
+                        Err(e) => {
+                            println!("Error matching {} with {}: {}", who, addr, e);
+                        }
                     }
 
                     send_task_in_send
