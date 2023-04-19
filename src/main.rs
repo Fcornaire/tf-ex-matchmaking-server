@@ -185,17 +185,17 @@ async fn handle_socket(
                         is_server = is_srv;
                     }
 
-                    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-                    let res =
-                        hole_punch_connect::server::make_match(&socket, addr, client.public_ip);
-                    match res {
-                        Ok(_) => {
-                            println!("Matched {} with {}", client.public_ip, addr);
-                        }
-                        Err(e) => {
-                            println!("Error matching {} with {}: {}", client.public_ip, addr, e);
-                        }
-                    }
+                    // let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+                    // let res =
+                    //     hole_punch_connect::server::make_match(&socket, addr, client.public_ip);
+                    // match res {
+                    //     Ok(_) => {
+                    //         println!("Matched {} with {}", client.public_ip, addr);
+                    //     }
+                    //     Err(e) => {
+                    //         println!("Error matching {} with {}: {}", client.public_ip, addr, e);
+                    //     }
+                    // }
 
                     send_task_in_send
                         .send(Message::Item(ServerMsg::Opponent {
