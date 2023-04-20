@@ -100,7 +100,8 @@ async fn ws_handler(
     let mut address = addr;
     for (key, value) in headers.iter() {
         if key.as_str().to_lowercase() == "x-forwarded-for" {
-            address = value.to_str().unwrap().to_string().parse().unwrap();
+            let fordwarded_for = value.to_str().unwrap();
+            address = format!("{fordwarded_for}:1234").parse().unwrap();
         }
     }
 
