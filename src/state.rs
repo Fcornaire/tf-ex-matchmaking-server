@@ -142,7 +142,7 @@ impl ClientsExts for Clients {
                 current.draw = Some(rng);
             } else {
                 if client.draw.is_some() {
-                    current.draw = Some(client.draw.unwrap() % 2);
+                    current.draw = Some((client.draw.unwrap() + 1) % 2);
                 }
             }
 
