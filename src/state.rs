@@ -10,9 +10,8 @@ pub type Clients = Arc<Mutex<HashMap<SocketAddr, Client>>>;
 pub struct Client {
     pub code: String,
     pub public_ip: SocketAddr,
-    pub typ: MatchmakingType,
+    pub matchmaking_type: MatchmakingType,
     pub matched: Option<SocketAddr>,
-    pub is_server: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,9 +25,8 @@ impl Client {
         Self {
             code,
             public_ip,
-            typ: MatchmakingType::Direct,
+            matchmaking_type: MatchmakingType::Direct,
             matched: None,
-            is_server: None,
         }
     }
 
@@ -36,12 +34,11 @@ impl Client {
         self.matched = Some(to_update);
     }
 
-    pub fn is_server(&self) -> Option<bool> {
-        self.is_server
-    }
-
-    pub fn set_is_server(&mut self, to_update: bool) {
-        self.is_server = Some(to_update);
+    pub fn is_direct(&self) -> bool {
+        match self.matchmaking_type {
+            MatchmakingType::Direct => true,
+            _ => false,
+        }
     }
 }
 
@@ -64,7 +61,12 @@ pub trait ClientsExts {
         &mut self,
         private_ip: SocketAddr,
         public_ip: SocketAddr,
-    ) -> bool;
+    ) -> (String, bool);
+    async fn match_with_direct_code_async(
+        &mut self,
+        private_ip: SocketAddr,
+        code: String,
+    ) -> Option<SocketAddr>;
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
 }
@@ -75,12 +77,12 @@ impl ClientsExts for Clients {
         &mut self,
         private_ip: SocketAddr,
         public_ip: SocketAddr,
-    ) -> bool {
+    ) -> (String, bool) {
         let mut clients = self.lock().await;
 
         if clients.contains_key(&private_ip) {
             eprintln!("addr {}  already registered", private_ip);
-            return false;
+            return ("".to_string(), false);
         }
 
         if clients
@@ -88,26 +90,53 @@ impl ClientsExts for Clients {
             .any(|(k, _)| k.ip() == private_ip.ip() && private_ip.ip().to_string() != "127.0.0.1")
         {
             eprintln!("ip {} already registered", private_ip.ip());
-            return false;
+            return ("".to_string(), false);
         }
 
         //generate random code for direct connection
         let mut code = rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
+            .sample_iter(&rand::distributions::Uniform::from(b'A'..=b'Z'))
             .take(5)
             .map(char::from)
             .collect::<String>();
 
         while clients.values().any(|client| client.code == code) {
             code = rand::thread_rng()
-                .sample_iter(&rand::distributions::Alphanumeric)
+                .sample_iter(&rand::distributions::Uniform::from(b'A'..=b'Z'))
                 .take(5)
                 .map(char::from)
                 .collect::<String>();
         }
 
-        clients.insert(private_ip, Client::new_direct(code, public_ip));
-        true
+        clients.insert(private_ip, Client::new_direct(code.clone(), public_ip));
+        (code, true)
+    }
+
+    async fn match_with_direct_code_async(
+        &mut self,
+        private_ip: SocketAddr,
+        code: String,
+    ) -> Option<SocketAddr> {
+        let mut clients = self.lock().await;
+
+        if !clients.contains_key(&private_ip) {
+            eprintln!("addr {}  not registered for direct", private_ip);
+            return None;
+        }
+
+        let cloned = clients.clone();
+
+        let opponent = cloned
+            .iter()
+            .find(|(_, client)| client.code == code && client.is_direct());
+
+        if let Some((_, client)) = opponent {
+            let current = clients.get_mut(&private_ip).unwrap();
+            current.set_matched(client.public_ip);
+            Some(client.public_ip)
+        } else {
+            None
+        }
     }
 
     async fn get_client(&self, addr: SocketAddr) -> Option<Client> {

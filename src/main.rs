@@ -5,13 +5,10 @@ use axum::{
     Router,
 };
 use futures::{SinkExt, StreamExt};
+use headers::HeaderMap;
 use msg::{ClientMsg, ServerMsg};
 
-use std::{
-    net::{SocketAddr, UdpSocket},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
@@ -63,7 +60,7 @@ async fn main() {
         let port = std::env::var("PORT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(8080);
+            .unwrap_or(3000);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
@@ -91,6 +88,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade<ServerMsg, ClientMsg>,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
@@ -98,9 +96,17 @@ async fn ws_handler(
     } else {
         String::from("Unknown browser")
     };
-    println!("`{user_agent}` at {addr} connected.");
 
-    ws.on_upgrade(move |socket| handle_socket(socket, addr, state))
+    let mut address = addr;
+    for (key, value) in headers.iter() {
+        if key.as_str().to_lowercase() == "x-forwarded-for" {
+            address = value.to_str().unwrap().to_string().parse().unwrap();
+        }
+    }
+
+    println!("`{user_agent}` at {address} connected.");
+
+    ws.on_upgrade(move |socket| handle_socket(socket, address, state))
 }
 
 /// Actual websocket statemachine (one will be spawned per connection)
@@ -125,40 +131,70 @@ async fn handle_socket(
     let cloned_state_send = state.clone();
 
     let send_task_in_rcv = sender.clone();
-    let send_task_in_send = sender.clone();
+    let _send_task_in_send = sender.clone();
 
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
+            println!("Received message: {:?}", msg);
             match msg {
-                Ok(Message::Item(ClientMsg::RegisterDirect { addr })) => {
-                    let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
+                Ok(Message::Item(item)) => match item {
+                    ClientMsg::RegisterDirect { addr } => {
+                        let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
 
-                    let who: SocketAddr = addr.parse().unwrap();
+                        let who: SocketAddr = addr.parse().unwrap();
 
-                    let result = clients.register_direct_async(private_ip, who).await;
+                        let (code, result) = clients.register_direct_async(private_ip, who).await;
 
-                    if !result {
+                        if !result {
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::RegisterDirectResponse {
+                                    success: false,
+                                    code,
+                                }))
+                                .await
+                                .unwrap();
+                            break;
+                        }
+
+                        println!("Client {} registered for direct", who);
                         send_task_in_rcv
-                            .send(Message::Item(ServerMsg::RegisterResponse {
-                                success: false,
-                                details: String::from("Registration failed"),
+                            .send(Message::Item(ServerMsg::RegisterDirectResponse {
+                                success: true,
+                                code,
                             }))
                             .await
                             .unwrap();
-                        break;
                     }
+                    ClientMsg::MatchWithDirectCode { code } => {
+                        let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
 
-                    println!("Client {} registered for direct", who);
-                    send_task_in_rcv
-                        .send(Message::Item(ServerMsg::RegisterResponse {
-                            success: true,
-                            details: String::from("Welcome to the server!"),
-                        }))
-                        .await
-                        .unwrap();
-                }
+                        let result = clients
+                            .match_with_direct_code_async(private_ip, code.clone())
+                            .await;
+
+                        if let Some(opponent_addr) = result {
+                            println!("Client {} matched with direct code {}", private_ip, code);
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
+                                    success: true,
+                                    opponent_addr: opponent_addr.to_string(),
+                                }))
+                                .await
+                                .unwrap();
+                        } else {
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
+                                    success: false,
+                                    opponent_addr: String::from(""),
+                                }))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                },
                 Ok(Message::Close(_fame)) => {
                     println!("Client {} closed connection", private_ip);
+                    //TODO: remove client from clients
                     return;
                 }
                 Ok(_) => {}
@@ -179,34 +215,16 @@ async fn handle_socket(
             let current_socket = clients.get_client(private_ip).await;
 
             if let Some(client) = current_socket {
-                if let Some(addr) = client.matched {
-                    let mut is_server = false;
-                    if let Some(is_srv) = client.is_server() {
-                        is_server = is_srv;
-                    }
+                if let Some(_addr) = client.matched {
+                    // send_task_in_send
+                    //     .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
+                    //         success: true,
+                    //         opponent_addr: addr.to_string(),
+                    //     }))
+                    //     .await
+                    //     .unwrap();
 
-                    // let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-                    // let res =
-                    //     hole_punch_connect::server::make_match(&socket, addr, client.public_ip);
-                    // match res {
-                    //     Ok(_) => {
-                    //         println!("Matched {} with {}", client.public_ip, addr);
-                    //     }
-                    //     Err(e) => {
-                    //         println!("Error matching {} with {}: {}", client.public_ip, addr, e);
-                    //     }
-                    // }
-
-                    send_task_in_send
-                        .send(Message::Item(ServerMsg::Opponent {
-                            opponent_addr: addr.to_string(),
-                            is_server,
-                            local: private_ip.to_string(),
-                        }))
-                        .await
-                        .unwrap();
-
-                    clients.remove_client(private_ip).await;
+                    // clients.remove_client(private_ip).await;
                 }
             }
         }
@@ -221,7 +239,11 @@ async fn handle_socket(
         }
     }
 
-    //TODO: remove client from state
-
+    state
+        .clone()
+        .clients
+        .clone()
+        .remove_client(private_ip)
+        .await;
     println!("Websocket context {} destroyed", private_ip);
 }

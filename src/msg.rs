@@ -2,18 +2,18 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub enum ServerMsg {
-    RegisterResponse {
+    RegisterDirectResponse {
         success: bool,
-        details: String,
+        code: String,
     },
-    Opponent {
+    MatchWithDirectCodeResponse {
+        success: bool,
         opponent_addr: String,
-        local: String,
-        is_server: bool,
     },
 }
 
 #[derive(Debug, Deserialize)]
 pub enum ClientMsg {
     RegisterDirect { addr: String },
+    MatchWithDirectCode { code: String },
 }
