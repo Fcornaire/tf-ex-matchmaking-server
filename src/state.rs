@@ -12,6 +12,7 @@ pub struct Client {
     pub public_ip: SocketAddr,
     pub matchmaking_type: MatchmakingType,
     pub matched: Option<SocketAddr>,
+    pub draw: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,7 @@ impl Client {
             public_ip,
             matchmaking_type: MatchmakingType::Direct,
             matched: None,
+            draw: None,
         }
     }
 
@@ -66,7 +68,7 @@ pub trait ClientsExts {
         &mut self,
         private_ip: SocketAddr,
         code: String,
-    ) -> Option<SocketAddr>;
+    ) -> (Option<SocketAddr>, i32);
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
 }
@@ -116,26 +118,37 @@ impl ClientsExts for Clients {
         &mut self,
         private_ip: SocketAddr,
         code: String,
-    ) -> Option<SocketAddr> {
+    ) -> (Option<SocketAddr>, i32) {
         let mut clients = self.lock().await;
 
         if !clients.contains_key(&private_ip) {
             eprintln!("addr {}  not registered for direct", private_ip);
-            return None;
+            return (None, 0);
         }
 
         let cloned = clients.clone();
 
-        let opponent = cloned
-            .iter()
-            .find(|(_, client)| client.code == code && client.is_direct());
+        let opponent = cloned.iter().find(|(_, client)| {
+            client.code == code && client.is_direct() && client.matched.is_none()
+        });
 
         if let Some((_, client)) = opponent {
             let current = clients.get_mut(&private_ip).unwrap();
             current.set_matched(client.public_ip);
-            Some(client.public_ip)
+
+            if current.draw.is_none() && client.draw.is_none() {
+                let rng = rand::thread_rng().gen_range(0..2);
+
+                current.draw = Some(rng);
+            } else {
+                if client.draw.is_some() {
+                    current.draw = Some(client.draw.unwrap() % 2);
+                }
+            }
+
+            (Some(client.public_ip), current.draw.unwrap())
         } else {
-            None
+            (None, 0)
         }
     }
 

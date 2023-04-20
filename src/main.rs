@@ -173,12 +173,13 @@ async fn handle_socket(
                             .match_with_direct_code_async(private_ip, code.clone())
                             .await;
 
-                        if let Some(opponent_addr) = result {
+                        if let (Some(opponent_addr), draw) = result {
                             println!("Client {} matched with direct code {}", private_ip, code);
                             send_task_in_rcv
                                 .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
                                     success: true,
                                     opponent_addr: opponent_addr.to_string(),
+                                    draw,
                                 }))
                                 .await
                                 .unwrap();
@@ -187,6 +188,7 @@ async fn handle_socket(
                                 .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
                                     success: false,
                                     opponent_addr: String::from(""),
+                                    draw: 0,
                                 }))
                                 .await
                                 .unwrap();

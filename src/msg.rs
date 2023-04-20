@@ -9,6 +9,7 @@ pub enum ServerMsg {
     MatchWithDirectCodeResponse {
         success: bool,
         opponent_addr: String,
+        draw: i32,
     },
 }
 
