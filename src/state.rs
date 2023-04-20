@@ -128,9 +128,9 @@ impl ClientsExts for Clients {
 
         let cloned = clients.clone();
 
-        let opponent = cloned.iter().find(|(_, client)| {
-            client.code == code && client.is_direct() && client.matched.is_none()
-        });
+        let opponent = cloned
+            .iter()
+            .find(|(_, client)| client.code == code && client.is_direct());
 
         if let Some((_, client)) = opponent {
             let current = clients.get_mut(&private_ip).unwrap();
