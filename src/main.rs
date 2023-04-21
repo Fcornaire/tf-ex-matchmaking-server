@@ -4,9 +4,10 @@ use axum::{
     routing::get,
     Router,
 };
-use futures::{channel::mpsc::unbounded, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use headers::HeaderMap;
 use msg::{ClientMsg, ServerMsg};
+use tracing::Level;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::{
@@ -19,6 +20,8 @@ use tokio::{
     sync::mpsc,
     time::{self, Duration},
 };
+
+use tracing_subscriber::FmtSubscriber;
 
 use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
 
@@ -36,13 +39,13 @@ pub mod state;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "example_websockets=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer().with_level(true))
-        .init();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::DEBUG)
+        // .with_file(true)
+        // .with_line_number(true)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     let state = Arc::new(AppState::new());
