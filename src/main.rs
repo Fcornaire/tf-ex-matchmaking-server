@@ -236,45 +236,45 @@ async fn handle_socket(
         }
     });
 
-    let mut keep_alive_task = tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(1));
-        let mut interval_search = time::interval(Duration::from_secs(1));
-        let mut can_break = false;
-        while !can_break {
-            interval_search.tick().await;
-            let clients: &mut Clients = &mut cloned_state_keep_alive.clients.clone();
-            let current_socket = clients.get_client(private_ip).await;
-            if let Some(_) = current_socket {
-                can_break = true;
-            }
-        }
+    // let mut keep_alive_task = tokio::spawn(async move {
+    //     let mut interval = time::interval(Duration::from_secs(1));
+    //     let mut interval_search = time::interval(Duration::from_secs(1));
+    //     let mut can_break = false;
+    //     while !can_break {
+    //         interval_search.tick().await;
+    //         let clients: &mut Clients = &mut cloned_state_keep_alive.clients.clone();
+    //         let current_socket = clients.get_client(private_ip).await;
+    //         if let Some(_) = current_socket {
+    //             can_break = true;
+    //         }
+    //     }
 
-        let clients: &mut Clients = &mut cloned_state_keep_alive.clients.clone();
-        let current_socket = clients.get_client(private_ip).await;
+    //     let clients: &mut Clients = &mut cloned_state_keep_alive.clients.clone();
+    //     let current_socket = clients.get_client(private_ip).await;
 
-        if let Some(client) = current_socket {
-            let public_ip = client.public_ip;
-            let socket: UdpSocket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    //     if let Some(client) = current_socket {
+    //         let public_ip = client.public_ip;
+    //         let socket: UdpSocket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
 
-            loop {
-                interval.tick().await;
-                println!("Sending keep alive to {}", public_ip);
+    //         loop {
+    //             interval.tick().await;
+    //             println!("Sending keep alive to {}", public_ip);
 
-                socket.send_to(b"-1", &public_ip).await.unwrap();
-            }
-        };
-    });
+    //             socket.send_to(b"-1", &public_ip).await.unwrap();
+    //         }
+    //     };
+    // });
 
     tokio::select! {
         _ = (&mut send_task) => {
             recv_task.abort();
-            keep_alive_task.abort();
+            // keep_alive_task.abort();
         },
         _ = (&mut recv_task) => {
             send_task.abort();
-            keep_alive_task.abort();
+            // keep_alive_task.abort();
         }
-        _ = (&mut keep_alive_task) => {}
+        // _ = (&mut keep_alive_task) => {}
     }
 
     state
