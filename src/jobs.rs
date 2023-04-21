@@ -10,7 +10,7 @@ async fn monitor(state: Arc<AppState>) {
     let mut interval = time::interval(Duration::from_secs(10));
     loop {
         interval.tick().await;
-        println!("App: {:?}", state);
+        tracing::info!("App: {:?}", state);
     }
 }
 

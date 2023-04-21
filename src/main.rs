@@ -7,7 +7,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use headers::HeaderMap;
 use msg::{ClientMsg, ServerMsg};
-use tracing::Level;
+use tracing::{debug, log::info, Level};
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::{
@@ -16,7 +16,6 @@ use tower_http::{
 };
 
 use tokio::{
-    net::UdpSocket,
     sync::mpsc,
     time::{self, Duration},
 };
@@ -107,7 +106,7 @@ async fn ws_handler(
         }
     }
 
-    println!("`{user_agent}` at {address} connected.");
+    info!("`{user_agent}` at {address} connected.");
 
     ws.on_upgrade(move |socket| handle_socket(socket, address, state))
 }
@@ -130,7 +129,7 @@ async fn handle_socket(
         }
     });
 
-    let cloned_state_keep_alive = state.clone();
+    // let cloned_state_keep_alive = state.clone();
     let cloned_state_recv = state.clone();
     let cloned_state_send = state.clone();
 
@@ -139,7 +138,7 @@ async fn handle_socket(
 
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
-            println!("Received message: {:?}", msg);
+            debug!("Received message: {:?}", msg);
             match msg {
                 Ok(Message::Item(item)) => match item {
                     ClientMsg::RegisterDirect { addr } => {
@@ -160,7 +159,7 @@ async fn handle_socket(
                             break;
                         }
 
-                        println!("Client {} registered for direct", who);
+                        info!("Client {} registered for direct", who);
                         send_task_in_rcv
                             .send(Message::Item(ServerMsg::RegisterDirectResponse {
                                 success: true,
@@ -177,7 +176,7 @@ async fn handle_socket(
                             .await;
 
                         if let (Some(opponent_addr), draw) = result {
-                            println!("Client {} matched with direct code {}", private_ip, code);
+                            info!("Client {} matched with direct code {}", private_ip, code);
                             send_task_in_rcv
                                 .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
                                     success: true,
@@ -199,7 +198,7 @@ async fn handle_socket(
                     }
                 },
                 Ok(Message::Close(_fame)) => {
-                    println!("Client {} closed connection", private_ip);
+                    info!("Client {} closed connection", private_ip);
                     //TODO: remove client from clients
                     return;
                 }
@@ -283,5 +282,5 @@ async fn handle_socket(
         .clone()
         .remove_client(private_ip)
         .await;
-    println!("Websocket context {} destroyed", private_ip);
+    info!("Websocket context {} destroyed", private_ip);
 }

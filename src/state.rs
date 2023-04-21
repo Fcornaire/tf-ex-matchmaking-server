@@ -3,6 +3,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use async_trait::async_trait;
 use rand::Rng;
 use tokio::sync::Mutex;
+use tracing::error;
 
 pub type Clients = Arc<Mutex<HashMap<SocketAddr, Client>>>;
 
@@ -83,7 +84,7 @@ impl ClientsExts for Clients {
         let mut clients = self.lock().await;
 
         if clients.contains_key(&private_ip) {
-            eprintln!("addr {}  already registered", private_ip);
+            error!("addr {}  already registered", private_ip);
             return ("".to_string(), false);
         }
 
@@ -91,7 +92,7 @@ impl ClientsExts for Clients {
             .iter()
             .any(|(k, _)| k.ip() == private_ip.ip() && private_ip.ip().to_string() != "127.0.0.1")
         {
-            eprintln!("ip {} already registered", private_ip.ip());
+            error!("ip {} already registered", private_ip.ip());
             return ("".to_string(), false);
         }
 
@@ -122,7 +123,7 @@ impl ClientsExts for Clients {
         let mut clients = self.lock().await;
 
         if !clients.contains_key(&private_ip) {
-            eprintln!("addr {}  not registered for direct", private_ip);
+            error!("addr {}  not registered for direct", private_ip);
             return (None, 0);
         }
 
