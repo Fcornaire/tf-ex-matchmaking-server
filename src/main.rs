@@ -27,8 +27,6 @@ use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
 
 use crate::state::{AppState, Clients, ClientsExts};
 
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
 use crate::jobs::spawn_jobs;
 
 //allows to extract the IP of connecting user
@@ -239,7 +237,7 @@ async fn handle_socket(
     });
 
     let mut keep_alive_task = tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(3));
+        let mut interval = time::interval(Duration::from_secs(1));
         let mut interval_search = time::interval(Duration::from_secs(1));
         let mut can_break = false;
         while !can_break {
