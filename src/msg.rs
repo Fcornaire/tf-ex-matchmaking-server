@@ -10,6 +10,7 @@ pub enum ServerMsg {
         success: bool,
         opponent_addr: String,
         draw: i32,
+        seed: i32,
     },
 }
 

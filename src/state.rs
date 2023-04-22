@@ -14,6 +14,7 @@ pub struct Client {
     pub matchmaking_type: MatchmakingType,
     pub matched: Option<SocketAddr>,
     pub draw: Option<i32>,
+    pub seed: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ impl Client {
             matchmaking_type: MatchmakingType::Direct,
             matched: None,
             draw: None,
+            seed: -1,
         }
     }
 
@@ -69,7 +71,7 @@ pub trait ClientsExts {
         &mut self,
         private_ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32);
+    ) -> (Option<SocketAddr>, i32, i32);
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
 }
@@ -119,12 +121,12 @@ impl ClientsExts for Clients {
         &mut self,
         private_ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32) {
+    ) -> (Option<SocketAddr>, i32, i32) {
         let mut clients = self.lock().await;
 
         if !clients.contains_key(&private_ip) {
             error!("addr {}  not registered for direct", private_ip);
-            return (None, 0);
+            return (None, 0, -1);
         }
 
         let cloned = clients.clone();
@@ -141,15 +143,19 @@ impl ClientsExts for Clients {
                 let rng = rand::thread_rng().gen_range(0..2);
 
                 current.draw = Some(rng);
+
+                let seed = rand::thread_rng().gen_range(0..1000);
+                current.seed = seed;
             } else {
                 if client.draw.is_some() {
                     current.draw = Some((client.draw.unwrap() + 1) % 2);
+                    current.seed = client.seed;
                 }
             }
 
-            (Some(client.public_ip), current.draw.unwrap())
+            (Some(client.public_ip), current.draw.unwrap(), current.seed)
         } else {
-            (None, 0)
+            (None, 0, -1)
         }
     }
 
