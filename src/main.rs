@@ -1,3 +1,9 @@
+pub mod args;
+pub mod jobs;
+pub mod msg;
+pub mod services;
+pub mod state;
+
 use axum::{
     extract::{State, TypedHeader},
     response::IntoResponse,
@@ -6,6 +12,7 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use headers::HeaderMap;
+use lazy_static::lazy_static;
 use msg::{ClientMsg, ServerMsg};
 use tracing::{debug, log::info, Level};
 
@@ -28,11 +35,16 @@ use crate::state::{AppState, Clients, ClientsExts};
 
 use crate::jobs::spawn_jobs;
 
+use args::Args;
+
 //allows to extract the IP of connecting user
 use axum::extract::connect_info::ConnectInfo;
-pub mod jobs;
-pub mod msg;
-pub mod state;
+lazy_static! {
+    pub static ref ARGS: Arc<Args> = Arc::new(Args::new(
+        std::env::var("GEOIP_CLIENT_ID").unwrap(),
+        std::env::var("GEOIP_API_KEY").unwrap()
+    ));
+}
 
 #[tokio::main]
 async fn main() {
@@ -80,11 +92,6 @@ async fn main() {
     }
 }
 
-/// The handler for the HTTP request (this gets called when the HTTP GET lands at the start
-/// of websocket negotiation). After this completes, the actual switching from HTTP to
-/// websocket protocol will occur.
-/// This is the last point where we can extract TCP/IP metadata such as IP address of the client
-/// as well as things from HTTP headers such as user-agent of the browser etc.
 async fn ws_handler(
     ws: WebSocketUpgrade<ServerMsg, ClientMsg>,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
@@ -129,12 +136,11 @@ async fn handle_socket(
         }
     });
 
-    // let cloned_state_keep_alive = state.clone();
     let cloned_state_recv = state.clone();
     let cloned_state_send = state.clone();
 
     let send_task_in_rcv = sender.clone();
-    let _send_task_in_send = sender.clone();
+    let send_task_in_send = sender.clone();
 
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
@@ -198,11 +204,83 @@ async fn handle_socket(
                                 .unwrap();
                         }
                     }
+                    ClientMsg::RegisterQuickPlay { addr } => {
+                        let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
+
+                        let who: SocketAddr = addr.parse().unwrap();
+
+                        let result = clients
+                            .register_for_quick_play_async(
+                                cloned_state_recv.get_geoip_client(),
+                                private_ip,
+                                who,
+                            )
+                            .await;
+
+                        if !result {
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::RegisterQuickPlayResponse {
+                                    success: false,
+                                }))
+                                .await
+                                .unwrap();
+                            break;
+                        }
+
+                        info!("Client {} registered for quick play", who);
+                        send_task_in_rcv
+                            .send(Message::Item(ServerMsg::RegisterQuickPlayResponse {
+                                success: true,
+                            }))
+                            .await
+                            .unwrap();
+                    }
+                    ClientMsg::CancelQuickPlay { addr } => {
+                        let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
+
+                        let who: SocketAddr = addr.parse().unwrap();
+
+                        clients.cancel_quick_play_async(who).await;
+
+                        info!("Client {} canceled quick play", who);
+                        send_task_in_rcv.send(Message::Close(None)).await.unwrap();
+
+                        break;
+                    }
+                    ClientMsg::AcceptQuickPlay { addr: _ } => {
+                        let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
+
+                        let result = clients.accept_quick_play_async(private_ip).await;
+
+                        if let (Some(opponent_addr), draw, seed) = result {
+                            info!("Client {} accepted quick play", private_ip);
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::AcceptQuickPlayResponse {
+                                    success: true,
+                                    draw,
+                                    seed,
+                                    opponent_addr: opponent_addr.to_string(),
+                                }))
+                                .await
+                                .unwrap();
+                            break;
+                        } else {
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::AcceptQuickPlayResponse {
+                                    success: false,
+                                    opponent_addr: String::from(""),
+                                    draw: 0,
+                                    seed: -1,
+                                }))
+                                .await
+                                .unwrap();
+                        }
+                    }
                 },
                 Ok(Message::Close(_fame)) => {
                     info!("Client {} closed connection", private_ip);
-                    //TODO: remove client from clients
-                    return;
+
+                    break;
                 }
                 Ok(_) => {}
                 Err(err) => {
@@ -213,7 +291,7 @@ async fn handle_socket(
     });
 
     let mut send_task = tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(9));
+        let mut interval = time::interval(Duration::from_secs(7));
 
         loop {
             interval.tick().await;
@@ -222,14 +300,21 @@ async fn handle_socket(
             let current_socket = clients.get_client(private_ip).await;
 
             if let Some(client) = current_socket {
-                if let Some(_addr) = client.matched {
-                    // send_task_in_send
-                    //     .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
-                    //         success: true,
-                    //         opponent_addr: addr.to_string(),
-                    //     }))
-                    //     .await
-                    //     .unwrap();
+                let is_waiting = client.is_waiting_choice;
+
+                if is_waiting {
+                    continue;
+                }
+
+                if let Some(addr) = client.possible_match {
+                    clients.set_client_waiting_choice(private_ip).await;
+
+                    send_task_in_send
+                        .send(Message::Item(ServerMsg::QuickPlayPossibleMatch {
+                            opponent_addr: addr.to_string(),
+                        }))
+                        .await
+                        .unwrap();
 
                     // clients.remove_client(private_ip).await;
                 }
@@ -237,45 +322,13 @@ async fn handle_socket(
         }
     });
 
-    // let mut keep_alive_task = tokio::spawn(async move {
-    //     let mut interval = time::interval(Duration::from_secs(1));
-    //     let mut interval_search = time::interval(Duration::from_secs(1));
-    //     let mut can_break = false;
-    //     while !can_break {
-    //         interval_search.tick().await;
-    //         let clients: &mut Clients = &mut cloned_state_keep_alive.clients.clone();
-    //         let current_socket = clients.get_client(private_ip).await;
-    //         if let Some(_) = current_socket {
-    //             can_break = true;
-    //         }
-    //     }
-
-    //     let clients: &mut Clients = &mut cloned_state_keep_alive.clients.clone();
-    //     let current_socket = clients.get_client(private_ip).await;
-
-    //     if let Some(client) = current_socket {
-    //         let public_ip = client.public_ip;
-    //         let socket: UdpSocket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
-
-    //         loop {
-    //             interval.tick().await;
-    //             println!("Sending keep alive to {}", public_ip);
-
-    //             socket.send_to(b"-1", &public_ip).await.unwrap();
-    //         }
-    //     };
-    // });
-
     tokio::select! {
         _ = (&mut send_task) => {
             recv_task.abort();
-            // keep_alive_task.abort();
         },
         _ = (&mut recv_task) => {
             send_task.abort();
-            // keep_alive_task.abort();
         }
-        // _ = (&mut keep_alive_task) => {}
     }
 
     state
