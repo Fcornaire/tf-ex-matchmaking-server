@@ -301,7 +301,7 @@ impl ClientsExts for Clients {
                 if let Some((_, client_matched)) = clients_cloned
                     .iter()
                     .filter(|(ip, _)| (*ip) != private_ip) //TODO: use .ip()
-                    .find(|(_, to_check)| client.is_near((*to_check).clone(), 500.0))
+                    .find(|(_, to_check)| client.is_near((*to_check).clone(), 500000.0))
                 {
                     client.set_match(client_matched.public_ip);
                     matchs.insert(client.public_ip, client_matched.public_ip);
