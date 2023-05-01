@@ -14,7 +14,7 @@ use futures::{SinkExt, StreamExt};
 use headers::HeaderMap;
 use lazy_static::lazy_static;
 use msg::{ClientMsg, ServerMsg};
-use tracing::{debug, log::info, Level};
+use tracing::{debug, info, Level};
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::{
@@ -263,7 +263,6 @@ async fn handle_socket(
                                 }))
                                 .await
                                 .unwrap();
-                            break;
                         } else {
                             send_task_in_rcv
                                 .send(Message::Item(ServerMsg::AcceptQuickPlayResponse {
