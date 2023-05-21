@@ -243,9 +243,6 @@ async fn handle_socket(
                         clients.cancel_quick_play_async(who).await;
 
                         info!("Client {} canceled quick play", who);
-                        send_task_in_rcv.send(Message::Close(None)).await.unwrap();
-
-                        break;
                     }
                     ClientMsg::AcceptQuickPlay { addr: _ } => {
                         let clients: &mut Clients = &mut cloned_state_recv.clients.clone();

@@ -2,7 +2,6 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
 use rand::Rng;
-use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{debug, error};
 
@@ -321,10 +320,10 @@ impl ClientsExts for Clients {
         clients.remove(&addr)
     }
 
-    async fn set_client_waiting_choice(&mut self, public_ip: SocketAddr) {
+    async fn set_client_waiting_choice(&mut self, private_ip: SocketAddr) {
         let mut clients = self.lock().await;
 
-        if let Some(client) = clients.get_mut(&public_ip) {
+        if let Some(client) = clients.get_mut(&private_ip) {
             client.is_waiting_choice = true;
         }
     }
@@ -332,19 +331,18 @@ impl ClientsExts for Clients {
     async fn cancel_quick_play_async(&mut self, public_ip: SocketAddr) {
         let mut clients = self.lock().await;
 
-        if let Some(client) = clients.get_mut(&public_ip) {
+        if let Some((_,client)) = clients.iter_mut().find(|(_private_ip,client)| client.public_ip == public_ip){
             client.is_waiting_choice = false;
+            client.possible_match.take();
         }
 
         clients
             .iter_mut()
             .find(|(_, client)| client.have_a_match_with(public_ip))
             .map(|(_, client)| {
-                client.possible_match = None;
+                client.possible_match.take();
                 client.is_waiting_choice = false;
             });
-
-        clients.retain(|_, client| client.public_ip != public_ip);
     }
 
     async fn accept_quick_play_async(
