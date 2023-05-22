@@ -10,7 +10,6 @@ async-trait = "0.1.68"
 axum =  { version = "0.6.15",features = ["ws", "headers"]  } 
 axum-typed-websockets = { version = "0.5.0", features = ["serde_json"] }
 futures = "0.3"
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 headers = "0.3"
 rand = "0.8.5"
 serde = { version = "1.0.160", features = ["derive"] }
@@ -26,3 +25,4 @@ hyper-tls = "0.5.0"
 base64 = "0.21.0"
 geoutils =  { version = "0.5.1", features = ["serde"] }
 lazy_static = "1.4.0"
+time = { version = "0.3", features = ["macros","formatting","parsing"] }

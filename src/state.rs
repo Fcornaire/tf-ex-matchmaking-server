@@ -1,7 +1,8 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use rand::Rng;
+use time::{macros::format_description, OffsetDateTime};
 use tokio::sync::Mutex;
 use tracing::{debug, error};
 
@@ -20,6 +21,7 @@ pub struct Client {
     pub location: Location,
     pub possible_match: Option<SocketAddr>,
     pub is_waiting_choice: bool,
+    pub matched_history: HashMap<SocketAddr, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,7 @@ impl Client {
             location: Location::default(),
             possible_match: None,
             is_waiting_choice: false,
+            matched_history: HashMap::new(),
         }
     }
 
@@ -54,7 +57,19 @@ impl Client {
             location: Location::default(),
             possible_match: None,
             is_waiting_choice: false,
+            matched_history: HashMap::new(),
         }
+    }
+
+    pub fn add_match_history(&mut self, opponent: SocketAddr) {
+        if !self.matched_history.contains_key(&opponent) {
+            self.matched_history
+                .insert(opponent, OffsetDateTime::now_utc().to_string());
+        }
+    }
+
+    pub fn already_matched_with(&self, opponent: SocketAddr) -> bool {
+        self.matched_history.contains_key(&opponent)
     }
 
     pub fn set_matched(&mut self, to_update: SocketAddr) {
@@ -104,6 +119,10 @@ impl Client {
     pub fn set_location(&mut self, location: Location) {
         self.location = location;
     }
+
+    fn remove_match_history(&mut self, public_ip: &SocketAddr) {
+        self.matched_history.remove(public_ip);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,13 +162,14 @@ pub trait ClientsExts {
         private_ip: SocketAddr,
         public_ip: SocketAddr,
     ) -> bool;
-    async fn make_match_for_quick_play_async(&mut self);
+    async fn make_match_for_quick_play_async(&mut self) -> i32;
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
     async fn set_client_waiting_choice(&mut self, addr: SocketAddr);
     async fn cancel_quick_play_async(&mut self, addr: SocketAddr);
     async fn accept_quick_play_async(&mut self, addr: SocketAddr)
         -> (Option<SocketAddr>, i32, i32);
+    async fn update_matched_history_async(&mut self, max_duration: Duration) -> i32;
 }
 
 #[async_trait]
@@ -274,12 +294,13 @@ impl ClientsExts for Clients {
         true
     }
 
-    async fn make_match_for_quick_play_async(&mut self) {
+    async fn make_match_for_quick_play_async(&mut self) -> i32 {
         let mut clients = self.lock().await;
 
         let clients_cloned = clients.clone();
 
         let mut matchs: HashMap<SocketAddr, SocketAddr> = HashMap::new();
+        let mut count = 0;
 
         clients
             .iter_mut()
@@ -293,7 +314,10 @@ impl ClientsExts for Clients {
                 if let Some((match1, _)) = matchs.iter().find(|(to_check1, to_check2)| {
                     *(*to_check2) == client.public_ip || *(*to_check1) == client.public_ip
                 }) {
-                    client.set_match(*match1);
+                    if !client.already_matched_with(*match1) {
+                        client.set_match(*match1);
+                        client.add_match_history(*match1);
+                    }
                     return;
                 }
 
@@ -302,12 +326,49 @@ impl ClientsExts for Clients {
                     .filter(|(ip, _)| (*ip) != private_ip) //TODO: use .ip()
                     .find(|(_, to_check)| client.is_near((*to_check).clone(), 50000000.0))
                 {
-                    client.set_match(client_matched.public_ip);
-                    matchs.insert(client.public_ip, client_matched.public_ip);
+                    if !client.already_matched_with(client_matched.public_ip) {
+                        client.set_match(client_matched.public_ip);
+                        client.add_match_history(client_matched.public_ip);
+                        matchs.insert(client.public_ip, client_matched.public_ip);
+                        count += 1;
+                    }
                 } else {
                     debug!("client {} have no matchs", client.public_ip);
                 }
             });
+
+        count
+    }
+
+    async fn update_matched_history_async(&mut self, max_duration: Duration) -> i32 {
+        let mut clients = self.lock().await;
+
+        let duration = time::Duration::new(max_duration.as_secs().try_into().unwrap(), 0);
+        let format = format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory]:[offset_minute]:[offset_second]"
+        );
+        let now = OffsetDateTime::now_utc();
+        let mut count = 0;
+
+        clients.iter_mut().for_each(|(_, client)| {
+            let matched_history = client.matched_history.clone();
+
+            matched_history.iter().for_each(|(public_ip, time)| {
+                let date = OffsetDateTime::parse(time, &format).unwrap();
+
+                match date.checked_add(duration) {
+                    Some(date) => {
+                        if date <= now {
+                            client.remove_match_history(public_ip);
+                            count += 1;
+                        }
+                    }
+                    None => {}
+                };
+            })
+        });
+
+        count
     }
 
     async fn get_client(&self, addr: SocketAddr) -> Option<Client> {
@@ -331,7 +392,10 @@ impl ClientsExts for Clients {
     async fn cancel_quick_play_async(&mut self, public_ip: SocketAddr) {
         let mut clients = self.lock().await;
 
-        if let Some((_,client)) = clients.iter_mut().find(|(_private_ip,client)| client.public_ip == public_ip){
+        if let Some((_, client)) = clients
+            .iter_mut()
+            .find(|(_private_ip, client)| client.public_ip == public_ip)
+        {
             client.is_waiting_choice = false;
             client.possible_match.take();
         }

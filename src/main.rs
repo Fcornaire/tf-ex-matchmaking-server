@@ -1,4 +1,5 @@
 pub mod args;
+pub mod constants;
 pub mod jobs;
 pub mod msg;
 pub mod services;
@@ -31,7 +32,10 @@ use tracing_subscriber::FmtSubscriber;
 
 use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
 
-use crate::state::{AppState, Clients, ClientsExts};
+use crate::{
+    constants::SEND_CLIENT_TASK_INTERVAL,
+    state::{AppState, Clients, ClientsExts},
+};
 
 use crate::jobs::spawn_jobs;
 
@@ -287,7 +291,7 @@ async fn handle_socket(
     });
 
     let mut send_task = tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(7));
+        let mut interval = time::interval(Duration::from_secs(SEND_CLIENT_TASK_INTERVAL));
 
         loop {
             interval.tick().await;
