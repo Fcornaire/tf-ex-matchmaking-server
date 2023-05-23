@@ -114,6 +114,10 @@ impl Client {
         self.matched.is_some()
     }
 
+    pub fn is_matched_to(&self, addr: SocketAddr) -> bool {
+        self.is_matched() && self.matched == Some(addr)
+    }
+
     pub fn match_for_quick_play(&mut self) {
         let opponent = self.possible_match.take().unwrap();
 
@@ -308,13 +312,10 @@ impl ClientsExts for Clients {
 
         clients
             .iter_mut()
-            .filter(|(_, client)| client.is_quick_play())
+            .filter(|(_, client)| {
+                client.is_quick_play() && !client.is_matched() && !client.already_have_a_match()
+            })
             .for_each(|(private_ip, client)| {
-                if client.already_have_a_match() {
-                    debug!("client {} already matched!", client.public_ip);
-                    return;
-                }
-
                 if let Some((match1, _)) = matchs.iter().find(|(to_check1, to_check2)| {
                     *(*to_check2) == client.public_ip || *(*to_check1) == client.public_ip
                 }) {
@@ -401,14 +402,15 @@ impl ClientsExts for Clients {
             .find(|(_private_ip, client)| client.public_ip == public_ip)
         {
             client.is_waiting_choice = false;
+            client.matched.take();
             client.possible_match.take();
         }
 
-        if let Some((_, client)) = clients
-            .iter_mut()
-            .find(|(_, client)| client.have_a_match_with(public_ip))
-        {
+        if let Some((_, client)) = clients.iter_mut().find(|(_, client)| {
+            client.have_a_match_with(public_ip) || client.is_matched_to(public_ip)
+        }) {
             client.possible_match.take();
+            client.matched.take();
             client.is_waiting_choice = false;
         };
     }
@@ -454,7 +456,7 @@ impl ClientsExts for Clients {
                     current.seed,
                 );
             } else {
-                error!("opponent not found");
+                error!("opponent not found : {}", opponent_addr);
                 return (None, 0, -1);
             }
         } else {
