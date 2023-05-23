@@ -1,4 +1,4 @@
-use std::{char::MAX, sync::Arc};
+use std::sync::Arc;
 
 use tokio::time::{self, Duration};
 

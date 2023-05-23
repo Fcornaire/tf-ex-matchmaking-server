@@ -292,6 +292,7 @@ async fn handle_socket(
 
     let mut send_task = tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(SEND_CLIENT_TASK_INTERVAL));
+        let mut has_matched: bool = false;
 
         loop {
             interval.tick().await;
@@ -316,7 +317,15 @@ async fn handle_socket(
                         .await
                         .unwrap();
 
-                    // clients.remove_client(private_ip).await;
+                    has_matched = true;
+                } else {
+                    if has_matched {
+                        has_matched = false;
+                        send_task_in_send
+                            .send(Message::Item(ServerMsg::DeniedQuickPlay {}))
+                            .await
+                            .unwrap();
+                    }
                 }
             }
         }

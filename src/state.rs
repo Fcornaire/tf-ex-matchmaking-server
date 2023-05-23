@@ -63,8 +63,12 @@ impl Client {
 
     pub fn add_match_history(&mut self, opponent: SocketAddr) {
         if !self.matched_history.contains_key(&opponent) {
+            let format = format_description!(
+                "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory]:[offset_minute]:[offset_second]"
+            );
+
             self.matched_history
-                .insert(opponent, OffsetDateTime::now_utc().to_string());
+                .insert(opponent, OffsetDateTime::now_utc().format(&format).unwrap());
         }
     }
 
@@ -400,13 +404,13 @@ impl ClientsExts for Clients {
             client.possible_match.take();
         }
 
-        clients
+        if let Some((_, client)) = clients
             .iter_mut()
             .find(|(_, client)| client.have_a_match_with(public_ip))
-            .map(|(_, client)| {
-                client.possible_match.take();
-                client.is_waiting_choice = false;
-            });
+        {
+            client.possible_match.take();
+            client.is_waiting_choice = false;
+        };
     }
 
     async fn accept_quick_play_async(

@@ -27,6 +27,7 @@ pub enum ServerMsg {
         draw: i32,
         seed: i32,
     },
+    DeniedQuickPlay {},
 }
 
 #[derive(Debug, Deserialize)]
