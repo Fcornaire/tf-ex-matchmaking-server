@@ -301,30 +301,32 @@ async fn handle_socket(
             let current_socket = clients.get_client(private_ip).await;
 
             if let Some(client) = current_socket {
-                let is_waiting = client.is_waiting_choice;
+                if !client.is_matched() {
+                    let is_waiting = client.is_waiting_choice;
 
-                if is_waiting {
-                    continue;
-                }
+                    if is_waiting {
+                        continue;
+                    }
 
-                if let Some(addr) = client.possible_match {
-                    clients.set_client_waiting_choice(private_ip).await;
+                    if let Some(addr) = client.possible_match {
+                        clients.set_client_waiting_choice(private_ip).await;
 
-                    send_task_in_send
-                        .send(Message::Item(ServerMsg::QuickPlayPossibleMatch {
-                            opponent_addr: addr.to_string(),
-                        }))
-                        .await
-                        .unwrap();
-
-                    has_matched = true;
-                } else {
-                    if has_matched {
-                        has_matched = false;
                         send_task_in_send
-                            .send(Message::Item(ServerMsg::DeniedQuickPlay {}))
+                            .send(Message::Item(ServerMsg::QuickPlayPossibleMatch {
+                                opponent_addr: addr.to_string(),
+                            }))
                             .await
                             .unwrap();
+
+                        has_matched = true;
+                    } else {
+                        if has_matched {
+                            has_matched = false;
+                            send_task_in_send
+                                .send(Message::Item(ServerMsg::DeniedQuickPlay {}))
+                                .await
+                                .unwrap();
+                        }
                     }
                 }
             }
