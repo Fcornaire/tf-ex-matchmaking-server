@@ -42,12 +42,17 @@ impl Location {
         geoutils::Location::new(self.latitude, self.longitude)
     }
 
-    pub fn is_near(&self, other: Location, max_distance: f64) -> bool {
+    pub fn distance_to(&self, other: Location) -> f64 {
         let current = self.to_geoutils_location();
         let other = other.to_geoutils_location();
-        let distance = current.haversine_distance_to(&other);
 
-        distance.meters() <= max_distance
+        current.haversine_distance_to(&other).meters()
+    }
+
+    pub fn is_near(&self, other: Location, max_distance: f64) -> bool {
+        let distance = self.distance_to(other);
+
+        distance <= max_distance
     }
 }
 

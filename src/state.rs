@@ -6,7 +6,10 @@ use time::{macros::format_description, OffsetDateTime};
 use tokio::sync::Mutex;
 use tracing::{debug, error};
 
-use crate::services::geoip::{GeoipClient, Location};
+use crate::{
+    constants::{MAX_MATCH_DISTANCE, MIN_MATCH_DISTANCE},
+    services::geoip::{GeoipClient, Location},
+};
 
 pub type Clients = Arc<Mutex<HashMap<SocketAddr, Client>>>;
 
@@ -22,6 +25,7 @@ pub struct Client {
     pub possible_match: Option<SocketAddr>,
     pub is_waiting_choice: bool,
     pub matched_history: HashMap<SocketAddr, String>,
+    pub max_match_distance: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,10 +47,11 @@ impl Client {
             possible_match: None,
             is_waiting_choice: false,
             matched_history: HashMap::new(),
+            max_match_distance: None,
         }
     }
 
-    pub fn new_matchmaking(public_ip: SocketAddr) -> Self {
+    pub fn new_quickplay(public_ip: SocketAddr) -> Self {
         Self {
             code: "".to_string(),
             public_ip,
@@ -58,7 +63,22 @@ impl Client {
             possible_match: None,
             is_waiting_choice: false,
             matched_history: HashMap::new(),
+            max_match_distance: Some(MIN_MATCH_DISTANCE),
         }
+    }
+
+    pub fn extend_max_match_distance(&mut self) {
+        if let Some(max_distance) = self.max_match_distance {
+            self.max_match_distance =
+                Some((max_distance + MIN_MATCH_DISTANCE).min(MAX_MATCH_DISTANCE));
+        }
+    }
+
+    pub fn match_max_distance(&self) -> f64 {
+        if let Some(max_distance) = self.max_match_distance {
+            return max_distance;
+        }
+        MAX_MATCH_DISTANCE
     }
 
     pub fn add_match_history(&mut self, opponent: SocketAddr) {
@@ -249,7 +269,7 @@ impl ClientsExts for Clients {
 
                 current.draw = Some(rng);
 
-                let seed = rand::thread_rng().gen_range(0..1000);
+                let seed = rand::thread_rng().gen_range(0..100000);
                 current.seed = seed;
             } else {
                 if client.draw.is_some() {
@@ -285,7 +305,7 @@ impl ClientsExts for Clients {
             return false;
         }
 
-        let mut client = Client::new_matchmaking(public_ip);
+        let mut client = Client::new_quickplay(public_ip);
 
         let geoip = geoip_client.get_location(public_ip.ip()).await;
 
@@ -330,16 +350,29 @@ impl ClientsExts for Clients {
                 if let Some((_, client_matched)) = clients_cloned
                     .iter()
                     .filter(|(ip, _)| (*ip) != private_ip) //TODO: use .ip()
-                    .find(|(_, to_check)| client.is_near((*to_check).clone(), 50000000.0))
+                    .filter(|(_, potential_client)| {
+                        !potential_client.already_matched_with(client.public_ip)
+                    })
+                    .filter(|(_, to_check)| {
+                        client.is_near((*to_check).clone(), client.match_max_distance())
+                    })
+                    .min_by_key(|(_, potential_client)| {
+                        potential_client
+                            .location
+                            .distance_to(client.location.clone()) as i64
+                    })
                 {
-                    if !client.already_matched_with(client_matched.public_ip) {
-                        client.set_match(client_matched.public_ip);
-                        client.add_match_history(client_matched.public_ip);
-                        matchs.insert(client.public_ip, client_matched.public_ip);
-                        count += 1;
-                    }
+                    client.set_match(client_matched.public_ip);
+                    client.add_match_history(client_matched.public_ip);
+                    matchs.insert(client.public_ip, client_matched.public_ip);
+                    count += 1;
                 } else {
-                    debug!("client {} have no matchs", client.public_ip);
+                    debug!(
+                        "no match found for {} with max distance {}",
+                        client.public_ip,
+                        client.match_max_distance()
+                    );
+                    client.extend_max_match_distance();
                 }
             });
 
@@ -442,7 +475,7 @@ impl ClientsExts for Clients {
 
                     current.draw = Some(rng);
 
-                    let seed = rand::thread_rng().gen();
+                    let seed = rand::thread_rng().gen_range(0..100000);
                     current.seed = seed;
                 } else {
                     if opponent_client.draw.is_some() {
@@ -475,5 +508,34 @@ impl ClientsExts for Clients {
                 client.is_quick_play() && (!client.already_have_a_match() || !client.is_matched())
             })
             .count() as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extend_max_match_distance_with_max_distance_less_than_max() {
+        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap());
+        state.max_match_distance = Some(10.0);
+        state.extend_max_match_distance();
+        assert_eq!(state.max_match_distance, Some(MIN_MATCH_DISTANCE + 10.0));
+    }
+
+    #[test]
+    fn test_extend_max_match_distance_with_max_distance_equal_to_max() {
+        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap());
+        state.max_match_distance = Some(MAX_MATCH_DISTANCE);
+        state.extend_max_match_distance();
+        assert_eq!(state.max_match_distance, Some(MAX_MATCH_DISTANCE));
+    }
+
+    #[test]
+    fn test_extend_max_match_distance_with_max_distance_greater_than_max() {
+        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap());
+        state.max_match_distance = Some(MAX_MATCH_DISTANCE + 10.0);
+        state.extend_max_match_distance();
+        assert_eq!(state.max_match_distance, Some(MAX_MATCH_DISTANCE));
     }
 }
