@@ -24,7 +24,6 @@ async fn make_match_for_quick_play(state: Arc<AppState>) {
 
     loop {
         interval.tick().await;
-        tracing::info!("[Job]: Making matchs for quick play");
         let matched = clients.make_match_for_quick_play_async().await;
         tracing::info!("[Job]: Made {} matchs for quick play", matched);
     }
@@ -37,7 +36,6 @@ async fn update_matched_history(state: Arc<AppState>) {
     loop {
         interval.tick().await;
 
-        tracing::info!("[Job]: Clearing match history");
         let removed = clients
             .update_matched_history_async(Duration::from_secs(MATCHED_HISTORY_EXPIRE_DURATION))
             .await;

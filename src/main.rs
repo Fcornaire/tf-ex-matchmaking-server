@@ -280,6 +280,11 @@ async fn handle_socket(
                 Ok(Message::Close(_fame)) => {
                     info!("Client {} closed connection", private_ip);
 
+                    send_task_in_rcv
+                        .send(Message::Close(None))
+                        .await
+                        .unwrap_or_else(|_| ());
+
                     break;
                 }
                 Ok(_) => {}
