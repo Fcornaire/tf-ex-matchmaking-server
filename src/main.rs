@@ -298,6 +298,18 @@ async fn handle_socket(
             interval.tick().await;
 
             let clients: &mut Clients = &mut cloned_state_send.clients.clone();
+
+            send_task_in_send
+                .send(Message::Item(
+                    ServerMsg::TotalAvailablePlayersInQuickPlayQueue {
+                        total: clients
+                            .get_total_matchable_clients_in_quick_play_async()
+                            .await,
+                    },
+                ))
+                .await
+                .unwrap();
+
             let current_socket = clients.get_client(private_ip).await;
 
             if let Some(client) = current_socket {

@@ -28,6 +28,9 @@ pub enum ServerMsg {
         seed: i32,
     },
     DeniedQuickPlay {},
+    TotalAvailablePlayersInQuickPlayQueue {
+        total: i32,
+    },
 }
 
 #[derive(Debug, Deserialize)]

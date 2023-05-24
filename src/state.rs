@@ -178,6 +178,7 @@ pub trait ClientsExts {
     async fn accept_quick_play_async(&mut self, addr: SocketAddr)
         -> (Option<SocketAddr>, i32, i32);
     async fn update_matched_history_async(&mut self, max_duration: Duration) -> i32;
+    async fn get_total_matchable_clients_in_quick_play_async(&self) -> i32;
 }
 
 #[async_trait]
@@ -463,5 +464,16 @@ impl ClientsExts for Clients {
             error!("addr {}  not registered", private_ip);
             return (None, 0, -1);
         }
+    }
+
+    async fn get_total_matchable_clients_in_quick_play_async(&self) -> i32 {
+        let clients = self.lock().await;
+
+        clients
+            .iter()
+            .filter(|(_, client)| {
+                client.is_quick_play() && (!client.already_have_a_match() || !client.is_matched())
+            })
+            .count() as i32
     }
 }
