@@ -9,6 +9,7 @@ pub enum ServerMsg {
     MatchWithDirectCodeResponse {
         success: bool,
         opponent_addr: String,
+        opponent_name: String,
         draw: i32,
         seed: i32,
     },
@@ -20,10 +21,12 @@ pub enum ServerMsg {
     },
     QuickPlayPossibleMatch {
         opponent_addr: String,
+        opponent_name: String,
     },
     AcceptQuickPlayResponse {
         success: bool,
         opponent_addr: String,
+        opponent_name: String,
         draw: i32,
         seed: i32,
     },
@@ -35,9 +38,9 @@ pub enum ServerMsg {
 
 #[derive(Debug, Deserialize)]
 pub enum ClientMsg {
-    RegisterDirect { addr: String },
+    RegisterDirect { addr: String, name: String },
     MatchWithDirectCode { code: String },
-    RegisterQuickPlay { addr: String },
+    RegisterQuickPlay { addr: String, name: String },
     CancelQuickPlay { addr: String },
     AcceptQuickPlay { addr: String },
 }

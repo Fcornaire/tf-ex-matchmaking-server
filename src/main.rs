@@ -151,12 +151,13 @@ async fn handle_socket(
             debug!("Received message: {:?}", msg);
             match msg {
                 Ok(Message::Item(item)) => match item {
-                    ClientMsg::RegisterDirect { addr } => {
+                    ClientMsg::RegisterDirect { addr, name } => {
                         let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
 
                         let who: SocketAddr = addr.parse().unwrap();
 
-                        let (code, result) = clients.register_direct_async(private_ip, who).await;
+                        let (code, result) =
+                            clients.register_direct_async(private_ip, who, name).await;
 
                         if !result {
                             send_task_in_rcv
@@ -185,12 +186,13 @@ async fn handle_socket(
                             .match_with_direct_code_async(private_ip, code.clone())
                             .await;
 
-                        if let (Some(opponent_addr), draw, seed) = result {
+                        if let (Some(opponent_addr), draw, seed, name) = result {
                             info!("Client {} matched with direct code {}", private_ip, code);
                             send_task_in_rcv
                                 .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
                                     success: true,
                                     opponent_addr: opponent_addr.to_string(),
+                                    opponent_name: name,
                                     draw,
                                     seed,
                                 }))
@@ -201,6 +203,7 @@ async fn handle_socket(
                                 .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
                                     success: false,
                                     opponent_addr: String::from(""),
+                                    opponent_name: String::from(""),
                                     draw: 0,
                                     seed: -1,
                                 }))
@@ -208,7 +211,7 @@ async fn handle_socket(
                                 .unwrap();
                         }
                     }
-                    ClientMsg::RegisterQuickPlay { addr } => {
+                    ClientMsg::RegisterQuickPlay { addr, name } => {
                         let clients: &mut Clients = &mut cloned_state_recv.clients.clone();
 
                         let who: SocketAddr = addr.parse().unwrap();
@@ -218,6 +221,7 @@ async fn handle_socket(
                                 cloned_state_recv.get_geoip_client(),
                                 private_ip,
                                 who,
+                                name,
                             )
                             .await;
 
@@ -253,7 +257,7 @@ async fn handle_socket(
 
                         let result = clients.accept_quick_play_async(private_ip).await;
 
-                        if let (Some(opponent_addr), draw, seed) = result {
+                        if let (Some(opponent_addr), draw, seed, name) = result {
                             info!("Client {} accepted quick play", private_ip);
                             send_task_in_rcv
                                 .send(Message::Item(ServerMsg::AcceptQuickPlayResponse {
@@ -261,6 +265,7 @@ async fn handle_socket(
                                     draw,
                                     seed,
                                     opponent_addr: opponent_addr.to_string(),
+                                    opponent_name: name,
                                 }))
                                 .await
                                 .unwrap();
@@ -269,6 +274,7 @@ async fn handle_socket(
                                 .send(Message::Item(ServerMsg::AcceptQuickPlayResponse {
                                     success: false,
                                     opponent_addr: String::from(""),
+                                    opponent_name: String::from(""),
                                     draw: 0,
                                     seed: -1,
                                 }))
@@ -328,9 +334,13 @@ async fn handle_socket(
                     if let Some(addr) = client.possible_match {
                         clients.set_client_waiting_choice(private_ip).await;
 
+                        let opponent_name =
+                            clients.get_client_by_public_ip(addr).await.unwrap().name;
+
                         send_task_in_send
                             .send(Message::Item(ServerMsg::QuickPlayPossibleMatch {
                                 opponent_addr: addr.to_string(),
+                                opponent_name,
                             }))
                             .await
                             .unwrap();

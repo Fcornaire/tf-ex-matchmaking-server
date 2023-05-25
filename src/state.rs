@@ -15,6 +15,7 @@ pub type Clients = Arc<Mutex<HashMap<SocketAddr, Client>>>;
 
 #[derive(Debug, Clone)]
 pub struct Client {
+    pub name: String,
     pub code: String,
     pub public_ip: SocketAddr,
     pub matchmaking_type: MatchmakingType,
@@ -35,8 +36,9 @@ pub enum MatchmakingType {
 }
 
 impl Client {
-    pub fn new_direct(code: String, public_ip: SocketAddr) -> Self {
+    pub fn new_direct(code: String, public_ip: SocketAddr, name: String) -> Self {
         Self {
+            name,
             code,
             public_ip,
             matchmaking_type: MatchmakingType::Direct,
@@ -51,8 +53,9 @@ impl Client {
         }
     }
 
-    pub fn new_quickplay(public_ip: SocketAddr) -> Self {
+    pub fn new_quickplay(public_ip: SocketAddr, name: String) -> Self {
         Self {
+            name,
             code: "".to_string(),
             public_ip,
             matchmaking_type: MatchmakingType::QuickPlay,
@@ -178,25 +181,30 @@ pub trait ClientsExts {
         &mut self,
         private_ip: SocketAddr,
         public_ip: SocketAddr,
+        name: String,
     ) -> (String, bool);
     async fn match_with_direct_code_async(
         &mut self,
         private_ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32, i32);
+    ) -> (Option<SocketAddr>, i32, i32, String);
     async fn register_for_quick_play_async(
         &mut self,
         geoip_client: GeoipClient,
         private_ip: SocketAddr,
         public_ip: SocketAddr,
+        name: String,
     ) -> bool;
     async fn make_match_for_quick_play_async(&mut self) -> i32;
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
+    async fn get_client_by_public_ip(&self, addr: SocketAddr) -> Option<Client>;
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
     async fn set_client_waiting_choice(&mut self, addr: SocketAddr);
     async fn cancel_quick_play_async(&mut self, addr: SocketAddr);
-    async fn accept_quick_play_async(&mut self, addr: SocketAddr)
-        -> (Option<SocketAddr>, i32, i32);
+    async fn accept_quick_play_async(
+        &mut self,
+        addr: SocketAddr,
+    ) -> (Option<SocketAddr>, i32, i32, String);
     async fn update_matched_history_async(&mut self, max_duration: Duration) -> i32;
     async fn get_total_matchable_clients_in_quick_play_async(&self) -> i32;
 }
@@ -207,6 +215,7 @@ impl ClientsExts for Clients {
         &mut self,
         private_ip: SocketAddr,
         public_ip: SocketAddr,
+        name: String,
     ) -> (String, bool) {
         let mut clients = self.lock().await;
 
@@ -238,7 +247,10 @@ impl ClientsExts for Clients {
                 .collect::<String>();
         }
 
-        clients.insert(private_ip, Client::new_direct(code.clone(), public_ip));
+        clients.insert(
+            private_ip,
+            Client::new_direct(code.clone(), public_ip, name),
+        );
         (code, true)
     }
 
@@ -246,12 +258,12 @@ impl ClientsExts for Clients {
         &mut self,
         private_ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32, i32) {
+    ) -> (Option<SocketAddr>, i32, i32, String) {
         let mut clients = self.lock().await;
 
         if !clients.contains_key(&private_ip) {
             error!("addr {}  not registered for direct", private_ip);
-            return (None, 0, -1);
+            return (None, 0, -1, "".to_string());
         }
 
         let cloned = clients.clone();
@@ -260,11 +272,11 @@ impl ClientsExts for Clients {
             .iter()
             .find(|(_, client)| client.code == code && client.is_direct());
 
-        if let Some((_, client)) = opponent {
+        if let Some((_, opponent_client)) = opponent {
             let current = clients.get_mut(&private_ip).unwrap();
-            current.set_matched(client.public_ip);
+            current.set_matched(opponent_client.public_ip);
 
-            if current.draw.is_none() && client.draw.is_none() {
+            if current.draw.is_none() && opponent_client.draw.is_none() {
                 let rng = rand::thread_rng().gen_range(0..2);
 
                 current.draw = Some(rng);
@@ -272,15 +284,20 @@ impl ClientsExts for Clients {
                 let seed = rand::thread_rng().gen_range(0..100000);
                 current.seed = seed;
             } else {
-                if client.draw.is_some() {
-                    current.draw = Some((client.draw.unwrap() + 1) % 2);
-                    current.seed = client.seed;
+                if opponent_client.draw.is_some() {
+                    current.draw = Some((opponent_client.draw.unwrap() + 1) % 2);
+                    current.seed = opponent_client.seed;
                 }
             }
 
-            (Some(client.public_ip), current.draw.unwrap(), current.seed)
+            (
+                Some(opponent_client.public_ip),
+                current.draw.unwrap(),
+                current.seed,
+                opponent_client.name.clone(),
+            )
         } else {
-            (None, 0, -1)
+            (None, 0, -1, "".to_string())
         }
     }
 
@@ -289,6 +306,7 @@ impl ClientsExts for Clients {
         geoip_client: GeoipClient,
         private_ip: SocketAddr,
         public_ip: SocketAddr,
+        name: String,
     ) -> bool {
         let mut clients = self.lock().await;
 
@@ -305,7 +323,7 @@ impl ClientsExts for Clients {
             return false;
         }
 
-        let mut client = Client::new_quickplay(public_ip);
+        let mut client = Client::new_quickplay(public_ip, name);
 
         let geoip = geoip_client.get_location(public_ip.ip()).await;
 
@@ -415,6 +433,14 @@ impl ClientsExts for Clients {
         clients.get(&addr).cloned()
     }
 
+    async fn get_client_by_public_ip(&self, addr: SocketAddr) -> Option<Client> {
+        let clients = self.lock().await;
+        clients
+            .iter()
+            .find(|(_, client)| client.public_ip == addr)
+            .map(|(_, client)| client.clone())
+    }
+
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client> {
         let mut clients = self.lock().await;
         clients.remove(&addr)
@@ -452,7 +478,7 @@ impl ClientsExts for Clients {
     async fn accept_quick_play_async(
         &mut self,
         private_ip: SocketAddr,
-    ) -> (Option<SocketAddr>, i32, i32) {
+    ) -> (Option<SocketAddr>, i32, i32, String) {
         let mut clients = self.lock().await;
 
         if clients.contains_key(&private_ip) {
@@ -488,14 +514,15 @@ impl ClientsExts for Clients {
                     Some(opponent_client.public_ip),
                     current.draw.unwrap(),
                     current.seed,
+                    opponent_client.name.clone(),
                 );
             } else {
                 error!("opponent not found : {}", opponent_addr);
-                return (None, 0, -1);
+                return (None, 0, -1, String::from(""));
             }
         } else {
             error!("addr {}  not registered", private_ip);
-            return (None, 0, -1);
+            return (None, 0, -1, String::from(""));
         }
     }
 
@@ -517,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_extend_max_match_distance_with_max_distance_less_than_max() {
-        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap());
+        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap(), "".to_string());
         state.max_match_distance = Some(10.0);
         state.extend_max_match_distance();
         assert_eq!(state.max_match_distance, Some(MIN_MATCH_DISTANCE + 10.0));
@@ -525,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_extend_max_match_distance_with_max_distance_equal_to_max() {
-        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap());
+        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap(), "".to_string());
         state.max_match_distance = Some(MAX_MATCH_DISTANCE);
         state.extend_max_match_distance();
         assert_eq!(state.max_match_distance, Some(MAX_MATCH_DISTANCE));
@@ -533,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_extend_max_match_distance_with_max_distance_greater_than_max() {
-        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap());
+        let mut state = Client::new_quickplay("127.0.0.1:3000".parse().unwrap(), "".to_string());
         state.max_match_distance = Some(MAX_MATCH_DISTANCE + 10.0);
         state.extend_max_match_distance();
         assert_eq!(state.max_match_distance, Some(MAX_MATCH_DISTANCE));
