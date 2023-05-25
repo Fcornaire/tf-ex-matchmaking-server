@@ -7,5 +7,5 @@ pub static MATCHED_HISTORY_EXPIRE_DURATION: u64 = 60;
 pub static SEND_CLIENT_TASK_INTERVAL: u64 = 3;
 
 /// the distances are in meters
-pub static MIN_MATCH_DISTANCE: f64 = 500.0;
-pub static MAX_MATCH_DISTANCE: f64 = 20500.0;
+pub static MIN_MATCH_DISTANCE: f64 = 500000.0;
+pub static MAX_MATCH_DISTANCE: f64 = 20500000.0;
