@@ -92,6 +92,11 @@ impl GeoipClient {
             let body = hyper::body::to_bytes(res.into_body()).await.unwrap();
             let body = String::from_utf8(body.to_vec()).unwrap();
 
+            if body.contains("IP_ADDRESS_RESERVED") {
+                //Propably a local ip
+                return Ok(Location::new(42.0, 42.0, "LOCAL".to_string()));
+            }
+
             let err = format!("Error while getting location from ip {} : {}", ip, body);
 
             tracing::error!(err);

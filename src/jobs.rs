@@ -7,7 +7,8 @@ use crate::{
         MAKE_MATCH_QP_JOB_INTERVAL, MATCHED_HISTORY_EXPIRE_DURATION, MONITOR_JOB_INTERVAL,
         UPDATE_MATCHED_HISTORY_JOB_INTERVAL,
     },
-    state::{AppState, Clients, ClientsExts},
+    extensions::clients::ClientsExts,
+    state::{AppState, Clients},
 };
 
 async fn monitor(state: Arc<AppState>) {
