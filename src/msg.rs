@@ -9,6 +9,7 @@ pub enum ServerMsg {
     MatchWithDirectCodeResponse {
         success: bool,
         opponent_name: String,
+        room_id: String,
         seed: i32,
     },
     RegisterQuickPlayResponse {

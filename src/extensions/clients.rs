@@ -17,7 +17,7 @@ pub trait ClientsExts {
         &mut self,
         ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32, String);
+    ) -> (Option<SocketAddr>, i32, String, String);
     async fn register_for_quick_play_async(
         &mut self,
         geoip_client: GeoipClient,
@@ -78,12 +78,12 @@ impl ClientsExts for Clients {
         &mut self,
         ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32, String) {
+    ) -> (Option<SocketAddr>, i32, String, String) {
         let mut clients = self.lock().await;
 
         if !clients.contains_key(&ip) {
             error!("addr {}  not registered for direct", ip);
-            return (None, -1, "".to_string());
+            return (None, -1, "".to_string(), "".to_string());
         }
 
         let cloned = clients.clone();
@@ -93,26 +93,31 @@ impl ClientsExts for Clients {
             .find(|(_, client)| client.code == code && client.is_direct());
 
         if let Some((opponent_ip, opponent_client)) = opponent {
-            let current = clients.get_mut(&opponent_ip).unwrap();
+            let current = clients.get_mut(&ip).unwrap();
             current.set_matched(*opponent_ip);
 
             if current.seed == -1 && opponent_client.seed == -1 {
                 let seed = rand::thread_rng().gen_range(0..100000);
+                let id = uuid::Uuid::new_v4().to_string();
+
                 current.seed = seed;
+                current.room_id = Some(id.clone());
             } else {
                 if opponent_client.seed != -1 {
                     current.seed = opponent_client.seed;
+                    current.room_id = opponent_client.room_id.clone();
                 }
             }
 
-            (
+            return (
                 Some(*opponent_ip),
                 current.seed,
+                current.room_id.clone().unwrap(),
                 opponent_client.name.clone(),
-            )
-        } else {
-            (None, -1, "".to_string())
+            );
         }
+
+        (None, -1, "".to_string(), "".to_string())
     }
 
     async fn register_for_quick_play_async(
@@ -298,36 +303,39 @@ impl ClientsExts for Clients {
 
             let current = clients.get_mut(&ip).unwrap();
 
-            let opponent_addr = current.possible_match.take().unwrap();
+            if let Some(opponent_addr) = current.possible_match.take() {
+                let opponent = clone
+                    .iter()
+                    .find(|(ip_candidate, _client)| **ip_candidate == opponent_addr);
 
-            let opponent = clone
-                .iter()
-                .find(|(ip_candidate, _client)| **ip_candidate == opponent_addr);
+                if let Some((opponent_ip, opponent_client)) = opponent {
+                    current.set_matched(*opponent_ip);
+                    current.is_waiting_choice = false;
 
-            if let Some((opponent_ip, opponent_client)) = opponent {
-                current.set_matched(*opponent_ip);
-                current.is_waiting_choice = false;
-
-                if current.seed == -1 && opponent_client.seed == -1 {
-                    let seed = rand::thread_rng().gen_range(0..100000);
-                    current.seed = seed;
-                } else {
-                    if opponent_client.seed != -1 {
-                        current.seed = opponent_client.seed;
+                    if current.seed == -1 && opponent_client.seed == -1 {
+                        let seed = rand::thread_rng().gen_range(0..100000);
+                        current.seed = seed;
+                    } else {
+                        if opponent_client.seed != -1 {
+                            current.seed = opponent_client.seed;
+                        }
                     }
-                }
 
-                return (
-                    Some(*opponent_ip),
-                    current.seed,
-                    opponent_client.name.clone(),
-                );
+                    return (
+                        Some(*opponent_ip),
+                        current.seed,
+                        opponent_client.name.clone(),
+                    );
+                } else {
+                    error!("opponent not found : {}", opponent_addr);
+                    return (None, -1, String::from(""));
+                }
             } else {
-                error!("opponent not found : {}", opponent_addr);
+                error!("addr {}  not registered", ip);
                 return (None, -1, String::from(""));
             }
         } else {
-            error!("addr {}  not registered", ip);
+            error!("No qp match {} found", ip);
             return (None, -1, String::from(""));
         }
     }

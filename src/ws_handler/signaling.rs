@@ -8,15 +8,19 @@ use axum::{
     Error,
 };
 use futures::{stream::SplitSink, StreamExt};
-use matchbox_protocol::{JsonPeerEvent, JsonPeerRequest, PeerId, PeerRequest};
+use headers::HeaderMap;
+use matchbox_protocol::{JsonPeerEvent, JsonPeerRequest, PeerRequest};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info, warn};
 
-use crate::state::{
-    signaling_state::{Peer, RequestedRoom, RoomId},
-    AppState,
+use crate::{
+    extensions::signaling_state::SignalingStateExts,
+    state::{
+        signaling_state::{Peer, RequestedRoom, RoomId},
+        AppState,
+    },
 };
 
 /// The handler for the HTTP request to upgrade to WebSockets.
@@ -27,8 +31,17 @@ pub async fn signaling_handler(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    info!("`{addr}` connected.");
+    let mut address = addr;
+    for (key, value) in headers.iter() {
+        if key.as_str().to_lowercase() == "x-forwarded-for" {
+            let fordwarded_for = value.to_str().unwrap();
+            address = format!("{fordwarded_for}:1234").parse().unwrap();
+        }
+    }
+
+    info!("`{address}` connected.");
 
     let room_id = room_id.map(|path| path.0).unwrap_or_default();
     let next = params
@@ -137,28 +150,9 @@ async fn handle_ws(websocket: WebSocket, state: Arc<AppState>, requested_room: R
     }
 
     // Peer disconnected or otherwise ended communication.
-    info!("Removing peer: {:?}", peer_uuid);
-    let mut state = state.signaling.lock().await;
-    if let Some(removed_peer) = state.remove_peer(&peer_uuid) {
-        let room = removed_peer.room;
-        let peers = state
-            .rooms
-            .get(&room)
-            .map(|room_peers| {
-                room_peers
-                    .iter()
-                    .copied()
-                    .filter(|peer_id| *peer_id != peer_uuid)
-                    .collect::<Vec<PeerId>>()
-            })
-            .unwrap_or_default();
-        // Tell each connected peer about the disconnected peer.
-        let event = Message::Text(JsonPeerEvent::PeerLeft(removed_peer.uuid).to_string());
-        for peer_id in peers {
-            match state.try_send(peer_id, event.clone()) {
-                Ok(()) => info!("Sent peer remove to: {:?}", peer_id),
-                Err(e) => error!("Failure sending peer remove: {e:?}"),
-            }
-        }
-    }
+    state
+        .signaling
+        .clone()
+        .remove_signaling_peer(peer_uuid)
+        .await;
 }
