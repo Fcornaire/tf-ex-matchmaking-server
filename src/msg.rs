@@ -10,6 +10,7 @@ pub enum ServerMsg {
         success: bool,
         opponent_name: String,
         room_id: String,
+        room_chat_id: String,
         seed: i32,
     },
     RegisterQuickPlayResponse {
@@ -20,6 +21,7 @@ pub enum ServerMsg {
     },
     QuickPlayPossibleMatch {
         room_id: String,
+        room_chat_id: String,
         opponent_name: String,
     },
     AcceptQuickPlayResponse {

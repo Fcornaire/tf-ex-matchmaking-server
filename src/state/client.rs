@@ -20,6 +20,7 @@ pub struct Client {
     pub matched_history: HashMap<SocketAddr, String>,
     pub max_match_distance: Option<f64>,
     pub room_id: Option<String>,
+    pub room_chat_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +43,7 @@ impl Client {
             matched_history: HashMap::new(),
             max_match_distance: None,
             room_id: None,
+            room_chat_id: None,
         }
     }
 
@@ -58,6 +60,7 @@ impl Client {
             matched_history: HashMap::new(),
             max_match_distance: Some(MIN_MATCH_DISTANCE),
             room_id: None,
+            room_chat_id: None,
         }
     }
 

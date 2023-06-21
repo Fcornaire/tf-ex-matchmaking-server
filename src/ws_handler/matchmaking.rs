@@ -106,13 +106,14 @@ pub async fn handle_socket(
 
                         let result = clients.match_with_direct_code_async(ip, code.clone()).await;
 
-                        if let (Some(_), seed, room_id, name) = result {
+                        if let (Some(_), seed, room_id, room_chat_id, name) = result {
                             info!("Client {} matched with direct code {}", ip, code);
                             send_task_in_rcv
                                 .send(Message::Item(ServerMsg::MatchWithDirectCodeResponse {
                                     success: true,
                                     opponent_name: name,
                                     room_id,
+                                    room_chat_id,
                                     seed,
                                 }))
                                 .await
@@ -123,6 +124,7 @@ pub async fn handle_socket(
                                     success: false,
                                     opponent_name: String::from(""),
                                     room_id: String::from(""),
+                                    room_chat_id: String::from(""),
                                     seed: -1,
                                 }))
                                 .await
@@ -248,6 +250,7 @@ pub async fn handle_socket(
                         send_task_in_send
                             .send(Message::Item(ServerMsg::QuickPlayPossibleMatch {
                                 room_id: client.room_id.unwrap().clone(),
+                                room_chat_id: client.room_chat_id.unwrap().clone(),
                                 opponent_name,
                             }))
                             .await

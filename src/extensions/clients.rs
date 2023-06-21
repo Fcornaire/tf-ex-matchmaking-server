@@ -17,7 +17,7 @@ pub trait ClientsExts {
         &mut self,
         ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32, String, String);
+    ) -> (Option<SocketAddr>, i32, String, String, String);
     async fn register_for_quick_play_async(
         &mut self,
         geoip_client: GeoipClient,
@@ -78,12 +78,12 @@ impl ClientsExts for Clients {
         &mut self,
         ip: SocketAddr,
         code: String,
-    ) -> (Option<SocketAddr>, i32, String, String) {
+    ) -> (Option<SocketAddr>, i32, String, String, String) {
         let mut clients = self.lock().await;
 
         if !clients.contains_key(&ip) {
             error!("addr {}  not registered for direct", ip);
-            return (None, -1, "".to_string(), "".to_string());
+            return (None, -1, "".to_string(), "".to_string(), "".to_string());
         }
 
         let cloned = clients.clone();
@@ -99,13 +99,16 @@ impl ClientsExts for Clients {
             if current.seed == -1 && opponent_client.seed == -1 {
                 let seed = rand::thread_rng().gen_range(0..100000);
                 let id = uuid::Uuid::new_v4().to_string();
+                let room_chat_id = uuid::Uuid::new_v4().to_string();
 
                 current.seed = seed;
                 current.room_id = Some(id.clone());
+                current.room_chat_id = Some(room_chat_id.clone());
             } else {
                 if opponent_client.seed != -1 {
                     current.seed = opponent_client.seed;
                     current.room_id = opponent_client.room_id.clone();
+                    current.room_chat_id = opponent_client.room_chat_id.clone();
                 }
             }
 
@@ -113,11 +116,12 @@ impl ClientsExts for Clients {
                 Some(*opponent_ip),
                 current.seed,
                 current.room_id.clone().unwrap(),
+                current.room_chat_id.clone().unwrap(),
                 opponent_client.name.clone(),
             );
         }
 
-        (None, -1, "".to_string(), "".to_string())
+        (None, -1, "".to_string(), "".to_string(), "".to_string())
     }
 
     async fn register_for_quick_play_async(
@@ -167,6 +171,7 @@ impl ClientsExts for Clients {
         let mut matchs: HashMap<SocketAddr, SocketAddr> = HashMap::new();
         let mut count = 0;
         let mut room_id = "".to_string();
+        let mut room_chat_id = "".to_string();
 
         clients
             .iter_mut()
@@ -182,6 +187,7 @@ impl ClientsExts for Clients {
                         client.set_match(*match1);
                         client.add_match_history(*match1);
                         client.room_id = Some(room_id.clone());
+                        client.room_chat_id = Some(room_chat_id.clone());
                     }
                     return;
                 }
@@ -203,8 +209,12 @@ impl ClientsExts for Clients {
                     client.add_match_history(*matched_ip);
 
                     let id = uuid::Uuid::new_v4().to_string();
+                    let chat_id = uuid::Uuid::new_v4().to_string();
+
                     client.room_id = Some(id.clone());
+                    client.room_chat_id = Some(chat_id.clone());
                     room_id = id.clone();
+                    room_chat_id = chat_id.clone();
 
                     matchs.insert(*ip, *matched_ip);
                     count += 1;
