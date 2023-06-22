@@ -54,7 +54,7 @@ pub async fn handle_socket(
     state: Arc<AppState>,
 ) {
     let (mut sink, mut stream) = socket.split();
-    let (sender, mut receiver) = mpsc::channel::<Message<ServerMsg>>(16);
+    let (sender, mut receiver) = mpsc::channel::<Message<ServerMsg>>(512);
 
     // spawn a task that forwards messages from the mpsc to the sink
     tokio::spawn(async move {
@@ -280,6 +280,27 @@ pub async fn handle_socket(
         }
     }
 
-    state.clone().clients.clone().remove_client(ip).await;
+    let mut clients = state.clone().clients.clone();
+
+    let client = clients.remove_client(ip).await;
+
+    if let Some(cli) = client {
+        if cli.already_have_a_match() || cli.is_matched() {
+            let possible_match = cli.possible_match;
+            if let Some(addr) = possible_match {
+                let mut opponent = clients.get_client(addr).await.unwrap();
+
+                opponent.unmatch_quick_play();
+            }
+
+            let matched = cli.matched;
+            if let Some(addr) = matched {
+                let mut opponent = clients.get_client(addr).await.unwrap();
+
+                opponent.unmatch_quick_play();
+            }
+        }
+    }
+
     info!("Websocket context {} destroyed", ip);
 }
