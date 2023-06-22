@@ -141,6 +141,11 @@ impl Client {
         self.matched = Some(opponent);
     }
 
+    pub fn unmatch_quick_play(&mut self) {
+        self.matched = None;
+        self.possible_match = None;
+    }
+
     pub fn set_location(&mut self, location: Location) {
         self.location = location;
     }
