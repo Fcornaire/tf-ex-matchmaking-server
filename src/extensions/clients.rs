@@ -26,8 +26,8 @@ pub trait ClientsExts {
     ) -> bool;
     async fn make_match_for_quick_play_async(&mut self) -> i32;
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
+    async fn unmatch_quick_play_async(&mut self, addr: SocketAddr);
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
-    async fn set_client_waiting_choice(&mut self, addr: SocketAddr);
     async fn cancel_quick_play_async(&mut self, addr: SocketAddr);
     async fn accept_quick_play_async(
         &mut self,
@@ -272,14 +272,6 @@ impl ClientsExts for Clients {
         clients.remove(&addr)
     }
 
-    async fn set_client_waiting_choice(&mut self, ip: SocketAddr) {
-        let mut clients = self.lock().await;
-
-        if let Some(client) = clients.get_mut(&ip) {
-            client.is_waiting_choice = true;
-        }
-    }
-
     async fn cancel_quick_play_async(&mut self, ip: SocketAddr) {
         let mut clients = self.lock().await;
 
@@ -287,7 +279,6 @@ impl ClientsExts for Clients {
             .iter_mut()
             .find(|(ip_candidate, _client)| **ip_candidate == ip)
         {
-            client.is_waiting_choice = false;
             client.matched.take();
             client.possible_match.take();
         }
@@ -298,7 +289,6 @@ impl ClientsExts for Clients {
         {
             client.possible_match.take();
             client.matched.take();
-            client.is_waiting_choice = false;
         };
     }
 
@@ -320,7 +310,6 @@ impl ClientsExts for Clients {
 
                 if let Some((opponent_ip, opponent_client)) = opponent {
                     current.set_matched(*opponent_ip);
-                    current.is_waiting_choice = false;
 
                     if current.seed == -1 && opponent_client.seed == -1 {
                         let seed = rand::thread_rng().gen_range(0..100000);
@@ -359,5 +348,13 @@ impl ClientsExts for Clients {
                 client.is_quick_play() && (!client.already_have_a_match() || !client.is_matched())
             })
             .count() as i32
+    }
+
+    async fn unmatch_quick_play_async(&mut self, ip: SocketAddr) {
+        let mut clients = self.lock().await;
+
+        if let Some(client) = clients.get_mut(&ip) {
+            client.unmatch_quick_play();
+        }
     }
 }

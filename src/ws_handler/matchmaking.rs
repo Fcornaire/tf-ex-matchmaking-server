@@ -236,15 +236,7 @@ pub async fn handle_socket(
 
             if let Some(client) = current_socket {
                 if !client.is_matched() {
-                    let is_waiting = client.is_waiting_choice;
-
-                    if is_waiting {
-                        continue;
-                    }
-
                     if let Some(addr) = client.possible_match {
-                        clients.set_client_waiting_choice(ip).await;
-
                         let opponent_name = clients.get_client(addr).await.unwrap().name;
 
                         send_task_in_send
@@ -288,16 +280,12 @@ pub async fn handle_socket(
         if cli.already_have_a_match() || cli.is_matched() {
             let possible_match = cli.possible_match;
             if let Some(addr) = possible_match {
-                let mut opponent = clients.get_client(addr).await.unwrap();
-
-                opponent.unmatch_quick_play();
+                clients.unmatch_quick_play_async(addr).await;
             }
 
             let matched = cli.matched;
             if let Some(addr) = matched {
-                let mut opponent = clients.get_client(addr).await.unwrap();
-
-                opponent.unmatch_quick_play();
+                clients.unmatch_quick_play_async(addr).await;
             }
         }
     }
