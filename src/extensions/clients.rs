@@ -168,10 +168,8 @@ impl ClientsExts for Clients {
 
         let clients_cloned = clients.clone();
 
-        let mut matchs: HashMap<SocketAddr, SocketAddr> = HashMap::new();
+        let mut matchs: HashMap<(SocketAddr, SocketAddr), (String, String)> = HashMap::new();
         let mut count = 0;
-        let mut room_id = "".to_string();
-        let mut room_chat_id = "".to_string();
 
         clients
             .iter_mut()
@@ -179,16 +177,20 @@ impl ClientsExts for Clients {
                 client.is_quick_play() && !client.is_matched() && !client.already_have_a_match()
             })
             .for_each(|(ip, client)| {
-                if let Some((match1, _)) = matchs
+                if let Some(((match1, match2), (room_id, room_chat_id))) = matchs
                     .iter()
-                    .find(|(to_check1, to_check2)| *(*to_check2) == *ip || *(*to_check1) == *ip)
+                    .find(|((to_check1, to_check2), _)| (*to_check2) == *ip || (*to_check1) == *ip)
                 {
-                    if !client.already_matched_with(*match1) {
+                    if ip == match1 {
+                        client.set_match(*match2);
+                        client.add_match_history(*match2);
+                    } else {
                         client.set_match(*match1);
                         client.add_match_history(*match1);
-                        client.room_id = Some(room_id.clone());
-                        client.room_chat_id = Some(room_chat_id.clone());
                     }
+                    client.room_id = Some(room_id.to_string());
+                    client.room_chat_id = Some(room_chat_id.to_string());
+
                     return;
                 }
 
@@ -198,6 +200,8 @@ impl ClientsExts for Clients {
                     .filter(|(_, potential_client)| !potential_client.already_matched_with(*ip))
                     .filter(|(_, to_check)| {
                         client.is_near((*to_check).clone(), client.match_max_distance())
+                            && (*to_check)
+                                .is_near((client).clone(), (*to_check).match_max_distance())
                     })
                     .min_by_key(|(_, potential_client)| {
                         potential_client
@@ -213,10 +217,8 @@ impl ClientsExts for Clients {
 
                     client.room_id = Some(id.clone());
                     client.room_chat_id = Some(chat_id.clone());
-                    room_id = id.clone();
-                    room_chat_id = chat_id.clone();
 
-                    matchs.insert(*ip, *matched_ip);
+                    matchs.insert((*ip, *matched_ip), (id.clone(), chat_id.clone()));
                     count += 1;
                 } else {
                     debug!(
