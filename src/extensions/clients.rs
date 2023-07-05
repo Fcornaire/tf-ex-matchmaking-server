@@ -197,12 +197,13 @@ impl ClientsExts for Clients {
                 if let Some((matched_ip, _client_matched)) = clients_cloned
                     .iter()
                     .filter(|(ip_candidate, _)| (*ip_candidate) != ip) //TODO: use .ip()
+                    .filter(|(_, potential_client)| !potential_client.already_have_a_match())
                     .filter(|(_, potential_client)| !potential_client.already_matched_with(*ip))
-                    .filter(|(_, to_check)| {
-                        client.is_near((*to_check).clone(), client.match_max_distance())
-                            && (*to_check)
-                                .is_near((client).clone(), (*to_check).match_max_distance())
-                    })
+                    // .filter(|(_, to_check)| {
+                    //     client.is_near((*to_check).clone(), client.match_max_distance())
+                    //         && (*to_check)
+                    //             .is_near((client).clone(), (*to_check).match_max_distance())
+                    // })
                     .min_by_key(|(_, potential_client)| {
                         potential_client
                             .location
