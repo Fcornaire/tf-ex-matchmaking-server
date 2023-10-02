@@ -47,14 +47,6 @@ impl ClientsExts for Clients {
             return ("".to_string(), false);
         }
 
-        if clients
-            .iter()
-            .any(|(k, _)| k.ip() == ip.ip() && ip.ip().to_string() != "127.0.0.1")
-        {
-            error!("ip {} already registered", ip.ip());
-            return ("".to_string(), false);
-        }
-
         //generate random code for direct connection
         let mut code = rand::thread_rng()
             .sample_iter(&rand::distributions::Uniform::from(b'A'..=b'Z'))
@@ -137,14 +129,6 @@ impl ClientsExts for Clients {
             return false;
         }
 
-        if clients
-            .iter()
-            .any(|(k, _)| k.ip() == ip.ip() && ip.ip().to_string() != "127.0.0.1")
-        {
-            error!("ip {} already registered", ip.ip());
-            return false;
-        }
-
         let mut client = Client::new_quickplay(name);
 
         let geoip = geoip_client.get_location(ip.ip()).await;
@@ -196,7 +180,7 @@ impl ClientsExts for Clients {
 
                 if let Some((matched_ip, _client_matched)) = clients_cloned
                     .iter()
-                    .filter(|(ip_candidate, _)| (*ip_candidate).ip() != ip.ip())
+                    .filter(|(ip_candidate, _)| (*ip_candidate) != ip)
                     .filter(|(_, potential_client)| potential_client.is_quick_play())
                     .filter(|(_, potential_client)| !potential_client.already_have_a_match())
                     .filter(|(_, potential_client)| !potential_client.already_matched_with(*ip))

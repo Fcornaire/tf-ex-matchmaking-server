@@ -38,7 +38,7 @@ pub async fn matchmaking_handler(
     for (key, value) in headers.iter() {
         if key.as_str().to_lowercase() == "x-forwarded-for" {
             let fordwarded_for = value.to_str().unwrap();
-            address = format!("{fordwarded_for}:1234").parse().unwrap();
+            address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
         }
     }
 
