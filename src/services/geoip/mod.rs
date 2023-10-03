@@ -69,6 +69,7 @@ impl GeoipClient {
         Self { client }
     }
 
+    //TODO: Probably need to have an Option(Location) instead of a Location
     pub async fn get_location(&self, ip: IpAddr) -> Result<Location, String> {
         let url = format!("https://geolite.info/geoip/v2.1/city/{}", ip.to_string());
 
@@ -86,32 +87,38 @@ impl GeoipClient {
             .body(Body::empty())
             .unwrap();
 
-        let res = self.client.request(req).await.unwrap();
+        let req = self.client.request(req).await;
 
-        if res.status() != StatusCode::OK {
-            let body = hyper::body::to_bytes(res.into_body()).await.unwrap();
-            let body = String::from_utf8(body.to_vec()).unwrap();
+        if let Ok(res) = req {
+            if res.status() != StatusCode::OK {
+                let body = hyper::body::to_bytes(res.into_body()).await.unwrap();
+                let body = String::from_utf8(body.to_vec()).unwrap();
 
-            if body.contains("IP_ADDRESS_RESERVED") {
-                //Propably a local ip
-                return Ok(Location::new(42.0, 42.0, "LOCAL".to_string()));
+                if body.contains("IP_ADDRESS_RESERVED") {
+                    //Propably a local ip
+                    return Ok(Location::new(42.0, 42.0, "LOCAL".to_string()));
+                }
+
+                let err = format!("Error while getting location from ip {} : {}", ip, body);
+
+                tracing::error!(err);
+
+                return Err(err);
             }
 
-            let err = format!("Error while getting location from ip {} : {}", ip, body);
+            let body = hyper::body::to_bytes(res.into_body()).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            let body: GeoipAPICityResponse = serde_json::from_str(&body).unwrap();
 
-            tracing::error!(err);
+            let latitude = body.location.latitude;
+            let longitude = body.location.longitude;
+            let country_code = body.country.iso_code.as_str();
 
-            return Err(err);
+            return Ok(Location::new(latitude, longitude, country_code.to_string()));
         }
 
-        let body = hyper::body::to_bytes(res.into_body()).await.unwrap();
-        let body = String::from_utf8(body.to_vec()).unwrap();
-        let body: GeoipAPICityResponse = serde_json::from_str(&body).unwrap();
+        tracing::warn!("Failed to find location.Fallback to default...");
 
-        let latitude = body.location.latitude;
-        let longitude = body.location.longitude;
-        let country_code = body.country.iso_code.as_str();
-
-        Ok(Location::new(latitude, longitude, country_code.to_string()))
+        Ok(Location::new(42.0, 42.0, "LOCAL".to_string()))
     }
 }
