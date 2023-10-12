@@ -7,6 +7,12 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq, Hash)]
 pub struct RoomId(String);
 
+impl From<RoomId> for String {
+    fn from(room_id: RoomId) -> Self {
+        room_id.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RequestedRoom {
     pub id: RoomId,
@@ -76,6 +82,11 @@ impl SignalingState {
             }
         };
 
-        Ok(peer.sender.send(Ok(message)).unwrap())
+        match peer.sender.send(Ok(message)) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                return Err(format!("Error sending to {:?}: {:?}", id, e));
+            }
+        }
     }
 }

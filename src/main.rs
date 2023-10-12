@@ -68,14 +68,18 @@ async fn main() {
 
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
+        tracing::info!("Server matchmaking started and listening on {}", addr);
+
         axum::Server::bind(&addr)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .unwrap();
-        tracing::debug!("listening on {}", addr);
     });
 
-    let mut jobs_task = tokio::spawn(async move { spawn_jobs(state.clone()).await });
+    let mut jobs_task = tokio::spawn(async move {
+        tracing::info!("Jobs started");
+        spawn_jobs(state.clone()).await;
+    });
 
     tokio::select! {
         _ = (&mut server_task) => {jobs_task.abort()},

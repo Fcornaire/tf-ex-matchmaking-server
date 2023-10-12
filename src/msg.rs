@@ -1,45 +1,37 @@
 use serde::{Deserialize, Serialize};
 
+use crate::state::lobby::{Lobby, Player};
+
 #[derive(Debug, Serialize)]
 pub enum ServerMsg {
-    RegisterDirectResponse {
+    GetLobbiesResponse {
+        lobbies: Vec<Lobby>,
+    },
+    CreateLobbyResponse {
         success: bool,
-        code: String,
+        message: String,
+        lobby: Option<Lobby>,
     },
-    MatchWithDirectCodeResponse {
+    JoinLobbyResponse {
         success: bool,
-        opponent_name: String,
-        room_id: String,
-        room_chat_id: String,
-        seed: i32,
+        message: String,
+        room_peer_id: String,
+        room_chat_peer_id: String,
     },
-    RegisterQuickPlayResponse {
+    LobbyUpdate {
+        lobby: Lobby,
+    },
+    LeaveLobbyResponse {
         success: bool,
-    },
-    Matched {
-        opponent_addr: String,
-    },
-    QuickPlayPossibleMatch {
-        room_id: String,
-        room_chat_id: String,
-        opponent_name: String,
-    },
-    AcceptQuickPlayResponse {
-        success: bool,
-        opponent_name: String,
-        seed: i32,
-    },
-    DeniedQuickPlay {},
-    TotalAvailablePlayersInQuickPlayQueue {
-        total: i32,
+        message: String,
     },
 }
 
 #[derive(Debug, Deserialize)]
 pub enum ClientMsg {
-    RegisterDirect { name: String },
-    MatchWithDirectCode { code: String },
-    RegisterQuickPlay { name: String },
-    CancelQuickPlay {},
-    AcceptQuickPlay {},
+    GetLobbies {},
+    CreateLobby { lobby: Lobby },
+    JoinLobby { room_id: String, name: String },
+    UpdatePlayer { player: Player },
+    LeaveLobby {},
 }

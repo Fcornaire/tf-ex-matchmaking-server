@@ -16,7 +16,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info, warn};
 
 use crate::{
-    extensions::signaling_state::SignalingStateExts,
+    extensions::{clients::ClientsExts, signaling_state::SignalingStateExts},
     state::{
         signaling_state::{Peer, RequestedRoom, RoomId},
         AppState,
@@ -49,7 +49,9 @@ pub async fn signaling_handler(
         .and_then(|next| next.parse::<usize>().ok());
 
     // Finalize the upgrade process by returning upgrade callback to client
-    ws.on_upgrade(move |websocket| handle_ws(websocket, state, RequestedRoom { id: room_id, next }))
+    ws.on_upgrade(move |websocket| {
+        handle_ws(websocket, state, addr, RequestedRoom { id: room_id, next })
+    })
 }
 
 fn parse_request(request: Result<Message, Error>) -> Result<JsonPeerRequest, String> {
@@ -75,11 +77,39 @@ fn spawn_sender_task(
 }
 
 /// One of these handlers is spawned for every web socket.
-async fn handle_ws(websocket: WebSocket, state: Arc<AppState>, requested_room: RequestedRoom) {
+async fn handle_ws(
+    websocket: WebSocket,
+    state: Arc<AppState>,
+    addr: SocketAddr,
+    requested_room: RequestedRoom,
+) {
     let (ws_sender, mut ws_receiver) = websocket.split();
     let sender = spawn_sender_task(ws_sender);
 
-    let peer_uuid = uuid::Uuid::new_v4().into();
+    let mut peer_uuid = uuid::Uuid::default().into();
+
+    {
+        let client = state
+            .clients
+            .get_client_by_ip_not_live(addr.ip(), requested_room.clone().id.into())
+            .await
+            .unwrap();
+
+        let peer = client.peer_id(requested_room.clone().id.into());
+
+        if let Some(peer) = peer {
+            peer_uuid = uuid::Uuid::parse_str(&peer).unwrap().into();
+        } else {
+            panic!("Peer not found")
+        }
+    }
+
+    {
+        state
+            .clients
+            .set_client_live_by_ip(addr.ip(), requested_room.clone().id.into(), true)
+            .await;
+    }
 
     {
         let mut add_peer_state = state.signaling.lock().await;
@@ -148,6 +178,8 @@ async fn handle_ws(websocket: WebSocket, state: Arc<AppState>, requested_room: R
             }
         }
     }
+
+    info!("{} : {:?} disconnected", addr, peer_uuid);
 
     // Peer disconnected or otherwise ended communication.
     state
