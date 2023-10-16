@@ -40,6 +40,24 @@ impl AppState {
         }
     }
 
+    pub async fn update_alive_client(&self, addr: SocketAddr) -> Result<(), String> {
+        let mut clients = self.clients.lock().await;
+
+        let client_res = clients.get_mut(&addr);
+
+        if client_res.is_none() {
+            return Err("Client not found".to_string());
+        }
+
+        let client = client_res.unwrap();
+
+        if client.is_alive() {
+            client.alive();
+        }
+
+        Ok(())
+    }
+
     pub async fn add_connexion(
         &self,
         addr: SocketAddr,
@@ -52,6 +70,18 @@ impl AppState {
         }
 
         connexions.insert(addr, sender);
+
+        Ok(())
+    }
+
+    pub async fn remove_connexion(&self, addr: SocketAddr) -> Result<(), String> {
+        let mut connexions = self.connections.lock().await;
+
+        if !connexions.contains_key(&addr) {
+            return Err("Connexion not found".to_string());
+        }
+
+        connexions.remove(&addr);
 
         Ok(())
     }
@@ -255,5 +285,25 @@ impl AppState {
         lobby.update_player(player);
 
         Ok(lobby.room_id())
+    }
+
+    pub async fn remove_all_empty_signaling_rooms(&self) {
+        let mut signaling = self.signaling.lock().await;
+
+        let mut rooms_to_remove = vec![];
+
+        for (room, peers) in signaling.rooms.iter() {
+            if peers.is_empty() {
+                rooms_to_remove.push(room.clone());
+            }
+        }
+
+        for room in rooms_to_remove.clone() {
+            signaling.rooms.remove(&room);
+        }
+
+        if rooms_to_remove.len() > 0 {
+            info!("Removed {} empty signaling rooms", rooms_to_remove.len());
+        }
     }
 }

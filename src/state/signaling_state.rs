@@ -89,4 +89,8 @@ impl SignalingState {
             }
         }
     }
+
+    pub fn remove_room(&mut self, room: &RequestedRoom) {
+        self.rooms.remove(room);
+    }
 }

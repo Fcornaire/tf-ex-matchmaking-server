@@ -10,12 +10,13 @@ use axum::{
 use futures::{stream::SplitSink, StreamExt};
 use headers::HeaderMap;
 use matchbox_protocol::{JsonPeerEvent, JsonPeerRequest, PeerRequest};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
-use tokio::sync::mpsc;
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use tokio::{sync::mpsc, time::interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info, warn};
 
 use crate::{
+    constants::KEEP_ALIVE_INTERVAL,
     extensions::{clients::ClientsExts, signaling_state::SignalingStateExts},
     state::{
         signaling_state::{Peer, RequestedRoom, RoomId},
@@ -142,49 +143,85 @@ async fn handle_ws(
         }
     }
 
+    let cloned_state_recv = state.clone();
+    let cloned_state_loop = state.clone();
+    let requested_room_clone = requested_room.clone();
+
     // The state machine for the data channel established for this websocket.
-    while let Some(request) = ws_receiver.next().await {
-        let request = match parse_request(request) {
-            Ok(request) => request,
-            Err(e) => {
-                error!("Error untangling request: {:?}", e);
-                continue;
-            }
-        };
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(request) = ws_receiver.next().await {
+            let request = match parse_request(request) {
+                Ok(request) => request,
+                Err(e) => {
+                    error!("Error untangling request: {:?}", e);
+                    continue;
+                }
+            };
 
-        info!("{:?} <- {:?}", peer_uuid, request);
+            info!("{:?} <- {:?}", peer_uuid, request);
 
-        match request {
-            PeerRequest::Signal { receiver, data } => {
-                let event = Message::Text(
-                    JsonPeerEvent::Signal {
-                        sender: peer_uuid,
-                        data,
+            match request {
+                PeerRequest::Signal { receiver, data } => {
+                    let event = Message::Text(
+                        JsonPeerEvent::Signal {
+                            sender: peer_uuid,
+                            data,
+                        }
+                        .to_string(),
+                    );
+                    let state = cloned_state_recv.signaling.lock().await;
+                    if let Some(peer) = state.clients.get(&receiver) {
+                        if let Err(e) = peer.sender.send(Ok(event)) {
+                            error!("error sending: {:?}", e);
+                        }
+                    } else {
+                        warn!("peer not found ({receiver:?}), ignoring signal");
                     }
-                    .to_string(),
-                );
-                let state = state.signaling.lock().await;
-                if let Some(peer) = state.clients.get(&receiver) {
-                    if let Err(e) = peer.sender.send(Ok(event)) {
-                        error!("error sending: {:?}", e);
-                    }
-                } else {
-                    warn!("peer not found ({receiver:?}), ignoring signal");
+                }
+                PeerRequest::KeepAlive => {
+                    // Do nothing. KeepAlive packets are used to protect against idle websocket
+                    // connections getting automatically disconnected, common for reverse proxies.
                 }
             }
-            PeerRequest::KeepAlive => {
-                // Do nothing. KeepAlive packets are used to protect against idle websocket
-                // connections getting automatically disconnected, common for reverse proxies.
+        }
+    });
+
+    let mut loop_task = tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(KEEP_ALIVE_INTERVAL));
+
+        loop {
+            interval.tick().await;
+
+            let client = cloned_state_loop
+                .clients
+                .get_client_by_peer_id(requested_room_clone.clone().id.into())
+                .await;
+
+            if client.is_none() {
+                warn!("Client {addr} not found in matchmaking, closing connection");
+                break;
             }
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut recv_task) => {
+            info!("signaling {} : {:?} disconnected", addr, peer_uuid);
+            loop_task.abort();
+        }
+        _ = (&mut loop_task) => {
+            info!("matchmaking {} : {:?} disconnected", addr, peer_uuid);
+            recv_task.abort();
         }
     }
 
-    info!("{} : {:?} disconnected", addr, peer_uuid);
-
     // Peer disconnected or otherwise ended communication.
     state
+        .clone()
         .signaling
         .clone()
         .remove_signaling_peer(peer_uuid)
         .await;
+
+    state.remove_all_empty_signaling_rooms().await;
 }

@@ -6,6 +6,7 @@ use crate::state::{client::Client, Clients};
 #[async_trait]
 pub trait ClientsExts {
     async fn get_client(&self, addr: SocketAddr) -> Option<Client>;
+    async fn get_client_by_peer_id(&self, peer_id: String) -> Option<Client>;
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
     async fn get_client_by_ip_not_live(&self, addr: IpAddr, room_id: String) -> Option<Client>;
     async fn set_client_live_by_ip(&self, addr: IpAddr, room_id: String, is_live: bool);
@@ -16,6 +17,14 @@ impl ClientsExts for Clients {
     async fn get_client(&self, addr: SocketAddr) -> Option<Client> {
         let clients = self.lock().await;
         clients.get(&addr).cloned()
+    }
+
+    async fn get_client_by_peer_id(&self, peer_id: String) -> Option<Client> {
+        let clients = self.lock().await;
+        clients
+            .iter()
+            .find(|(_, client)| client.peer_id(peer_id.clone()).is_some())
+            .map(|(_, client)| client.clone())
     }
 
     async fn get_client_by_ip_not_live(&self, addr: IpAddr, room_id: String) -> Option<Client> {

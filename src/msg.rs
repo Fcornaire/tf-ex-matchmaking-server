@@ -4,6 +4,7 @@ use crate::state::lobby::{Lobby, Player};
 
 #[derive(Debug, Serialize)]
 pub enum ServerMsg {
+    KeepAlive {},
     GetLobbiesResponse {
         lobbies: Vec<Lobby>,
     },
@@ -29,6 +30,7 @@ pub enum ServerMsg {
 
 #[derive(Debug, Deserialize)]
 pub enum ClientMsg {
+    KeepAlive {},
     GetLobbies {},
     CreateLobby { lobby: Lobby },
     JoinLobby { room_id: String, name: String },

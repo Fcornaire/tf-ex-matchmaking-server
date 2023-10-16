@@ -6,6 +6,7 @@ pub struct Client {
     pub location: Location,
     pub room: Option<Room>,
     pub room_chat: Option<Room>,
+    pub alive_counter: u8,
 }
 
 impl Client {
@@ -15,7 +16,20 @@ impl Client {
             location,
             room: None,
             room_chat: None,
+            alive_counter: 0,
         }
+    }
+
+    pub fn alive(&mut self) {
+        self.alive_counter = 0;
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive_counter < 3
+    }
+
+    pub fn maybe_not_alive(&mut self) {
+        self.alive_counter += 1;
     }
 
     pub fn is_near(&self, client: Client, max_distance: f64) -> bool {
