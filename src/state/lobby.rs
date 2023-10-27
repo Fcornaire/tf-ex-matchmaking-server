@@ -7,6 +7,7 @@ pub struct Lobby {
     room_id: String,
     room_chat_id: String,
     players: Vec<Player>,
+    spectators: Vec<Player>,
     game_data: GameData,
 }
 
@@ -21,6 +22,10 @@ impl Lobby {
 
     pub fn players(&self) -> Vec<Player> {
         self.players.clone()
+    }
+
+    pub fn spectators(&self) -> Vec<Player> {
+        self.spectators.clone()
     }
 
     pub fn room_id(&self) -> String {
@@ -42,8 +47,13 @@ impl Lobby {
         self.players.push(player);
     }
 
-    pub fn remove_player(&mut self, addr: String) {
+    pub fn add_spectator(&mut self, player: Player) {
+        self.spectators.push(player);
+    }
+
+    pub fn remove_player_or_spectator(&mut self, addr: String) {
         self.players.retain(|p| p.addr() != addr);
+        self.spectators.retain(|p| p.addr() != addr);
     }
 
     pub fn update_seed(&mut self, seed: i32) {
@@ -114,6 +124,14 @@ impl Player {
     pub fn update_addr(&mut self, addr: String) {
         self.addr = addr;
     }
+
+    pub fn update_room_peer_id(&mut self, room_peer_id: String) {
+        self.room_peer_id = room_peer_id;
+    }
+
+    pub fn update_room_chat_peer_id(&mut self, room_chat_peer_id: String) {
+        self.room_chat_peer_id = room_chat_peer_id;
+    }
 }
 
 #[derive(Default)]
@@ -162,6 +180,7 @@ impl LobbyBuilder {
             players: self.players.unwrap_or_default(),
             room_id: self.room_id.expect("lobby room id is required"),
             room_chat_id: self.room_chat_id.expect("lobby room chat id is required"),
+            spectators: vec![],
         }
     }
 }

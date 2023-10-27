@@ -142,11 +142,18 @@ pub async fn handle_socket(
                             }
                         }
                     }
-                    ClientMsg::JoinLobby { room_id, name } => {
-                        info!("Client {} want to join lobby {room_id}", ip);
+                    ClientMsg::JoinLobby {
+                        room_id,
+                        name,
+                        is_player,
+                    } => {
+                        info!(
+                            "Client {} want to join lobby {room_id}, is a player {is_player}",
+                            ip
+                        );
 
                         match cloned_state_recv
-                            .join_lobby(room_id.clone(), ip, name)
+                            .join_lobby(room_id.clone(), ip, name, is_player)
                             .await
                         {
                             Ok((room_peer_id, room_chat_peer_id)) => {

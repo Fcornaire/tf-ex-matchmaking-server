@@ -32,8 +32,16 @@ pub enum ServerMsg {
 pub enum ClientMsg {
     KeepAlive {},
     GetLobbies {},
-    CreateLobby { lobby: Lobby },
-    JoinLobby { room_id: String, name: String },
-    UpdatePlayer { player: Player },
+    CreateLobby {
+        lobby: Lobby,
+    },
+    JoinLobby {
+        room_id: String,
+        name: String,
+        is_player: bool,
+    },
+    UpdatePlayer {
+        player: Player,
+    },
     LeaveLobby {},
 }

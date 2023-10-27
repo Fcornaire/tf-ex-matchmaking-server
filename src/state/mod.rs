@@ -141,6 +141,8 @@ impl AppState {
         let mut host = host_res.unwrap().clone();
 
         host.update_addr(addr.to_string());
+        host.update_room_peer_id(client.peer_id(lobby.room_id().clone()).unwrap());
+        host.update_room_chat_peer_id(client.peer_id(lobby.room_chat_id().clone()).unwrap());
 
         lobby.update_seed(rand::thread_rng().gen_range(0..100000));
 
@@ -162,6 +164,7 @@ impl AppState {
         room_id: String,
         addr: SocketAddr,
         name: String,
+        is_player: bool,
     ) -> Result<(String, String), String> {
         let mut lobbies = self.lobbies.lock().await;
 
@@ -200,13 +203,23 @@ impl AppState {
             .peer_id(lobby.room_chat_id().clone())
             .ok_or("Couldn't retrieve Room chat peer id")?;
 
-        lobby.add_player(Player::new(
-            client.name.clone(),
-            addr.to_string(),
-            room_peer_id.clone(),
-            room_chat_peer_id.clone(),
-            false,
-        ));
+        if is_player {
+            lobby.add_player(Player::new(
+                client.name.clone(),
+                addr.to_string(),
+                room_peer_id.clone(),
+                room_chat_peer_id.clone(),
+                false,
+            ));
+        } else {
+            lobby.add_spectator(Player::new(
+                client.name.clone(),
+                addr.to_string(),
+                room_peer_id.clone(),
+                room_chat_peer_id.clone(),
+                false,
+            ));
+        }
 
         Ok((room_peer_id, room_chat_peer_id))
     }
@@ -216,7 +229,13 @@ impl AppState {
 
         let lobby = lobbies
             .iter_mut()
-            .find(|l| l.players().iter().any(|p| p.addr() == addr.to_string()))
+            .find(|lobby| {
+                lobby.players().iter().any(|p| p.addr() == addr.to_string())
+                    || lobby
+                        .spectators()
+                        .iter()
+                        .any(|p| p.addr() == addr.to_string())
+            })
             .ok_or("Lobby not found".to_string())?;
 
         let mut clients = self.clients.lock().await;
@@ -227,11 +246,11 @@ impl AppState {
             return Err("Client not found".to_string());
         }
 
-        let client = client_res.unwrap();
+        let client: &mut Client = client_res.unwrap();
 
         client.room = None;
 
-        lobby.remove_player(addr.to_string());
+        lobby.remove_player_or_spectator(addr.to_string());
 
         Ok(lobby.room_id())
     }
@@ -259,7 +278,13 @@ impl AppState {
         let mut connexions = self.connections.lock().await;
 
         for (addr, sender) in connexions.iter_mut() {
-            if lobby.players().iter().any(|p| p.addr() == addr.to_string()) {
+            if lobby.players().iter().any(|p| {
+                p.addr() == addr.to_string()
+                    || lobby
+                        .spectators()
+                        .iter()
+                        .any(|s| s.addr() == addr.to_string())
+            }) {
                 info!("Sending lobby update to {}", addr.to_string());
 
                 sender
