@@ -1,6 +1,6 @@
 /// This file contains all the constants used in the project.
 /// The interval are in seconds.
-pub static MONITOR_JOB_INTERVAL: u64 = 30;
+pub static MONITOR_JOB_INTERVAL: u64 = 60;
 pub static KEEP_ALIVE_INTERVAL: u64 = 10;
 
 /// the distances are in meters

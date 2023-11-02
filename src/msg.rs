@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::lobby::{Lobby, Player};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub enum ServerMsg {
     KeepAlive {},
     GetLobbiesResponse {
@@ -26,6 +26,9 @@ pub enum ServerMsg {
         success: bool,
         message: String,
     },
+    LeaveLobbyForce {},
+    RematchLobby {},
+    ArcherSelectLobby {},
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,4 +47,6 @@ pub enum ClientMsg {
         player: Player,
     },
     LeaveLobby {},
+    RematchLobbyChoice {},
+    ArcherSelectChoice {},
 }

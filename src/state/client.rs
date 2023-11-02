@@ -1,3 +1,5 @@
+use tracing::info;
+
 use crate::services::geoip::Location;
 
 #[derive(Debug, Clone)]
@@ -56,6 +58,18 @@ impl Client {
         None
     }
 
+    pub fn is_peer_id_live(&self, peer_id: String) -> bool {
+        if let Some(room) = &self.room {
+            return room.peer.as_ref().unwrap().id() == peer_id;
+        }
+
+        if let Some(room_chat) = &self.room_chat {
+            return room_chat.peer.as_ref().unwrap().id() == peer_id;
+        }
+
+        false
+    }
+
     pub fn set_live(&mut self, room_id: String, is_live: bool) {
         if let Some(room) = &mut self.room {
             if room.id() == room_id {
@@ -65,6 +79,20 @@ impl Client {
 
         if let Some(room_chat) = &mut self.room_chat {
             if room_chat.id() == room_id {
+                room_chat.peer.as_mut().unwrap().set_live(is_live);
+            }
+        }
+    }
+
+    pub fn set_live_by_peer_id(&mut self, peer_id: String, is_live: bool) {
+        if let Some(room) = &mut self.room {
+            if room.peer.as_ref().unwrap().id() == peer_id {
+                room.peer.as_mut().unwrap().set_live(is_live);
+            }
+        }
+
+        if let Some(room_chat) = &mut self.room_chat {
+            if room_chat.peer.as_ref().unwrap().id() == peer_id {
                 room_chat.peer.as_mut().unwrap().set_live(is_live);
             }
         }

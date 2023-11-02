@@ -10,6 +10,7 @@ pub trait ClientsExts {
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client>;
     async fn get_client_by_ip_not_live(&self, addr: IpAddr, room_id: String) -> Option<Client>;
     async fn set_client_live_by_ip(&self, addr: IpAddr, room_id: String, is_live: bool);
+    async fn set_client_live_by_peer_id(&self, peer_id: String, is_live: bool);
 }
 
 #[async_trait]
@@ -57,6 +58,14 @@ impl ClientsExts for Clients {
                         && !client.room_chat.as_ref().unwrap().is_live())
             })
             .map(|(_, client)| client.set_live(room_id, is_live));
+    }
+
+    async fn set_client_live_by_peer_id(&self, peer_id: String, is_live: bool) {
+        let mut clients = self.lock().await;
+        clients
+            .iter_mut()
+            .find(|(_, client)| client.is_peer_id_live(peer_id.clone()))
+            .map(|(_, client)| client.set_live_by_peer_id(peer_id, is_live));
     }
 
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client> {

@@ -192,6 +192,16 @@ pub async fn handle_socket(
 
                         match cloned_state_recv.update_player(ip, player).await {
                             Ok(room_id) => {
+                                match cloned_state_recv
+                                    .initialize_end_game_choice(room_id.clone())
+                                    .await
+                                {
+                                    Ok(()) => {}
+                                    Err(err) => {
+                                        error!("Error initializing end game choice : {}", err);
+                                    }
+                                }
+
                                 cloned_state_recv
                                     .send_lobby_update(room_id.clone())
                                     .await
@@ -231,6 +241,40 @@ pub async fn handle_socket(
                                     }))
                                     .await
                                     .unwrap();
+                                break;
+                            }
+                        }
+                    }
+                    ClientMsg::RematchLobbyChoice {} => {
+                        info!("Client {} want to rematch lobby", ip);
+
+                        match cloned_state_recv.rematch_lobby(ip).await {
+                            Ok(room_id) => {
+                                cloned_state_recv.end_game_action(room_id.clone()).await;
+                                cloned_state_recv
+                                    .send_lobby_update(room_id.clone())
+                                    .await
+                                    .unwrap();
+                            }
+                            Err(err) => {
+                                error!("Error rematching lobby : {}", err);
+                                break;
+                            }
+                        }
+                    }
+                    ClientMsg::ArcherSelectChoice {} => {
+                        info!("Client {} want to go select archer", ip);
+
+                        match cloned_state_recv.archer_select_choice_lobby(ip).await {
+                            Ok(room_id) => {
+                                cloned_state_recv.end_game_action(room_id.clone()).await;
+                                cloned_state_recv
+                                    .send_lobby_update(room_id.clone())
+                                    .await
+                                    .unwrap();
+                            }
+                            Err(err) => {
+                                error!("Error go selecting archer : {}", err);
                                 break;
                             }
                         }

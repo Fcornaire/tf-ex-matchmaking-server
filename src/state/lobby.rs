@@ -1,4 +1,12 @@
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tracing::error;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum EndGameChoice {
+    Rematch,
+    Archer,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -9,6 +17,7 @@ pub struct Lobby {
     players: Vec<Player>,
     spectators: Vec<Player>,
     game_data: GameData,
+    end_game_choice: Option<Vec<(String, EndGameChoice)>>,
 }
 
 impl Lobby {
@@ -36,6 +45,10 @@ impl Lobby {
         self.room_chat_id.clone()
     }
 
+    pub fn end_game_choice(&self) -> Option<Vec<(String, EndGameChoice)>> {
+        self.end_game_choice.clone()
+    }
+
     pub fn update_player(&mut self, player: Player) {
         self.players
             .iter_mut()
@@ -58,6 +71,42 @@ impl Lobby {
 
     pub fn update_seed(&mut self, seed: i32) {
         self.game_data.seed = seed;
+    }
+
+    pub fn initialize_end_game_choice(&mut self) {
+        self.end_game_choice = Some(vec![]);
+    }
+
+    pub fn rematch(&mut self, addr: String) {
+        let player = self.players.iter().find(|p| p.addr() == addr);
+
+        if let Some(player) = player {
+            if let Some(end_game_choice) = &mut self.end_game_choice {
+                end_game_choice.push((player.addr(), EndGameChoice::Rematch));
+            } else {
+                error!("No end game choice meaning the game is not over or already over");
+                return;
+            }
+        }
+    }
+
+    pub fn archer_select_choice(&mut self, addr: String) {
+        let player = self.players.iter().find(|p| p.addr() == addr);
+
+        if let Some(player) = player {
+            if let Some(end_game_choice) = &mut self.end_game_choice {
+                end_game_choice.push((player.addr(), EndGameChoice::Archer));
+            } else {
+                error!("No end game choice meaning the game is not over or already over");
+                return;
+            }
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.players.iter_mut().for_each(|p| p.ready = false);
+        self.end_game_choice = Some(vec![]);
+        self.update_seed(rand::thread_rng().gen_range(0..100000));
     }
 
     //TODO: update to 4 players when implemented
@@ -181,6 +230,7 @@ impl LobbyBuilder {
             room_id: self.room_id.expect("lobby room id is required"),
             room_chat_id: self.room_chat_id.expect("lobby room chat id is required"),
             spectators: vec![],
+            end_game_choice: None,
         }
     }
 }

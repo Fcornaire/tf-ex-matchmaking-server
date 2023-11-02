@@ -9,7 +9,11 @@ use rand::Rng;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::info;
 
-use crate::{msg::ServerMsg, services::geoip::GeoipClient, state::lobby::LobbyBuilder};
+use crate::{
+    msg::ServerMsg,
+    services::geoip::GeoipClient,
+    state::lobby::{EndGameChoice, LobbyBuilder},
+};
 
 use self::{
     client::{Client, Room},
@@ -255,6 +259,107 @@ impl AppState {
         Ok(lobby.room_id())
     }
 
+    pub async fn initialize_end_game_choice(&self, room_id: String) -> Result<(), String> {
+        let mut lobbies = self.lobbies.lock().await;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|lobby| lobby.room_id() == room_id)
+            .ok_or("Lobby not found".to_string())?;
+
+        if lobby.is_full() && lobby.end_game_choice().is_none() {
+            lobby.initialize_end_game_choice();
+        }
+
+        Ok(())
+    }
+
+    pub async fn rematch_lobby(&self, addr: SocketAddr) -> Result<String, String> {
+        let mut lobbies = self.lobbies.lock().await;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|lobby| lobby.players().iter().any(|p| p.addr() == addr.to_string()))
+            .ok_or("Lobby not found".to_string())?;
+
+        lobby.rematch(addr.to_string());
+
+        Ok(lobby.room_id())
+    }
+
+    pub async fn archer_select_choice_lobby(&self, addr: SocketAddr) -> Result<String, String> {
+        let mut lobbies = self.lobbies.lock().await;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|lobby| lobby.players().iter().any(|p| p.addr() == addr.to_string()))
+            .ok_or("Lobby not found".to_string())?;
+
+        lobby.archer_select_choice(addr.to_string());
+
+        Ok(lobby.room_id())
+    }
+
+    pub async fn end_game_action(&self, room_id: String) {
+        let mut lobbies = self.lobbies.lock().await;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|lobby| lobby.room_id() == room_id)
+            .unwrap();
+
+        if let Some(end_game_choice) = lobby.end_game_choice() {
+            if end_game_choice.len() < lobby.players().len() {
+                return;
+            }
+
+            let choices: Vec<EndGameChoice> = end_game_choice
+                .iter()
+                .map(|(_, choice)| choice.clone())
+                .collect();
+
+            if choices.iter().all(|c| *c == EndGameChoice::Rematch) {
+                info!(
+                    "End game action for room {} : {:?}",
+                    room_id,
+                    EndGameChoice::Rematch
+                );
+
+                self.send_msg_to_lobby(lobby.clone(), ServerMsg::RematchLobby {})
+                    .await;
+            } else {
+                info!(
+                    "End game action for room {} : {:?}",
+                    room_id,
+                    EndGameChoice::Archer
+                );
+
+                self.send_msg_to_lobby(lobby.clone(), ServerMsg::ArcherSelectLobby {})
+                    .await;
+            }
+
+            lobby.reset();
+        }
+    }
+
+    async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
+        let mut connexions = self.connections.lock().await;
+
+        for (addr, sender) in connexions.iter_mut() {
+            if lobby.players().iter().any(|p| {
+                p.addr() == addr.to_string()
+                    || lobby
+                        .spectators()
+                        .iter()
+                        .any(|s| s.addr() == addr.to_string())
+            }) {
+                info!("Sending {:?}  to {}", msg.clone(), addr.to_string());
+
+                sender.send(Message::Item(msg.clone())).await.unwrap();
+            }
+        }
+    }
+
     pub async fn purge_lobby(&self) {
         let mut lobbies = self.lobbies.lock().await;
 
@@ -275,26 +380,13 @@ impl AppState {
             .find(|l| l.room_id() == room_id)
             .ok_or("Lobby not found".to_string())?;
 
-        let mut connexions = self.connections.lock().await;
-
-        for (addr, sender) in connexions.iter_mut() {
-            if lobby.players().iter().any(|p| {
-                p.addr() == addr.to_string()
-                    || lobby
-                        .spectators()
-                        .iter()
-                        .any(|s| s.addr() == addr.to_string())
-            }) {
-                info!("Sending lobby update to {}", addr.to_string());
-
-                sender
-                    .send(Message::Item(ServerMsg::LobbyUpdate {
-                        lobby: lobby.clone(),
-                    }))
-                    .await
-                    .unwrap();
-            }
-        }
+        self.send_msg_to_lobby(
+            lobby.clone(),
+            ServerMsg::LobbyUpdate {
+                lobby: lobby.clone(),
+            },
+        )
+        .await;
 
         Ok(())
     }

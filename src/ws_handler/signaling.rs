@@ -215,6 +215,12 @@ async fn handle_ws(
         }
     }
 
+    state
+        .clone()
+        .clients
+        .set_client_live_by_peer_id(peer_uuid.0.to_string(), false)
+        .await;
+
     // Peer disconnected or otherwise ended communication.
     state
         .clone()
@@ -223,5 +229,5 @@ async fn handle_ws(
         .remove_signaling_peer(peer_uuid)
         .await;
 
-    state.remove_all_empty_signaling_rooms().await;
+    state.clone().remove_all_empty_signaling_rooms().await;
 }
