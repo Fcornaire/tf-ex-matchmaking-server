@@ -51,7 +51,12 @@ pub async fn signaling_handler(
 
     // Finalize the upgrade process by returning upgrade callback to client
     ws.on_upgrade(move |websocket| {
-        handle_ws(websocket, state, addr, RequestedRoom { id: room_id, next })
+        handle_ws(
+            websocket,
+            state,
+            address,
+            RequestedRoom { id: room_id, next },
+        )
     })
 }
 

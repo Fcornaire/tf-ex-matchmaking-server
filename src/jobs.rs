@@ -8,7 +8,7 @@ async fn monitor(state: Arc<AppState>) {
     let mut interval = time::interval(Duration::from_secs(MONITOR_JOB_INTERVAL));
     loop {
         interval.tick().await;
-        tracing::info!("[Job] Monitor: {:#?}", state);
+        tracing::info!("[Job] Monitor: {:?}", state);
     }
 }
 
