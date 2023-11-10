@@ -158,7 +158,7 @@ async fn handle_ws(
             let request = match parse_request(request) {
                 Ok(request) => request,
                 Err(e) => {
-                    error!("Error untangling request: {:?}", e);
+                    warn!("Error untangling request: {:?}", e);
                     continue;
                 }
             };

@@ -223,7 +223,7 @@ pub async fn handle_socket(
                                     .await
                                     .unwrap();
 
-                                cloned_state_recv.purge_lobby().await;
+                                cloned_state_recv.purge_lobby_async().await;
 
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::LeaveLobbyResponse {
@@ -292,7 +292,7 @@ pub async fn handle_socket(
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    tracing::error!("got error: {}", err);
+                    warn!("Error receiving message : {}", err);
                 }
             };
         }
@@ -349,12 +349,12 @@ pub async fn handle_socket(
                 Ok(room_id) => {
                     state.send_lobby_update(room_id.clone()).await.unwrap();
 
-                    state.purge_lobby().await;
+                    state.purge_lobby_async().await;
                 }
                 Err(err) => {
-                    error!(
-                        "Error removing from lobby (might already be deleted): {}",
-                        err
+                    warn!(
+                        "Error removing {} from lobby (might already be deleted): {}",
+                        ip, err
                     );
                 }
             }

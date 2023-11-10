@@ -40,6 +40,7 @@ lazy_static! {
 async fn main() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
+        .pretty()
         // .with_file(true)
         // .with_line_number(true)
         .finish();

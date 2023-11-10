@@ -44,6 +44,10 @@ impl AppState {
         }
     }
 
+    pub fn lobbies(&self) -> Lobbies {
+        self.lobbies.clone()
+    }
+
     pub async fn update_alive_client(&self, addr: SocketAddr) -> Result<(), String> {
         let mut clients = self.clients.lock().await;
 
@@ -360,16 +364,21 @@ impl AppState {
         }
     }
 
-    pub async fn purge_lobby(&self) {
+    pub async fn purge_lobby_async(&self) {
         let mut lobbies = self.lobbies.lock().await;
 
         let count = lobbies.len();
         lobbies.retain(|l| !l.players().is_empty());
-        info!("Purged {} empty lobbies", count - lobbies.len());
+        if count != lobbies.len() {
+            info!("Purged {} empty lobbies", count - lobbies.len());
+        }
 
         let count = lobbies.len();
         lobbies.retain(|l| l.players().iter().any(|p| p.is_host()));
-        info!("Purged {} lobbies with no host", count - lobbies.len());
+
+        if count != lobbies.len() {
+            info!("Purged {} lobbies with no host", count - lobbies.len());
+        }
     }
 
     pub async fn send_lobby_update(&self, room_id: String) -> Result<(), String> {

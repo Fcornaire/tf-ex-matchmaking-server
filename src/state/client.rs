@@ -1,5 +1,3 @@
-use tracing::info;
-
 use crate::services::geoip::Location;
 
 #[derive(Debug, Clone)]
