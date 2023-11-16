@@ -187,7 +187,11 @@ impl AppState {
         let lobby = lobbies
             .iter_mut()
             .find(|l| l.room_id() == room_id)
-            .ok_or("Lobby not found".to_string())?;
+            .ok_or(format!("Lobby {} not found", room_id))?;
+
+        if lobby.is_full() {
+            return Err(format!("Lobby {} is full", room_id));
+        }
 
         let mut clients: tokio::sync::MutexGuard<'_, HashMap<SocketAddr, Client>> =
             self.clients.lock().await;
