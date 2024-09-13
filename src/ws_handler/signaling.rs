@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     constants::KEEP_ALIVE_INTERVAL,
-    extensions::{clients::ClientsExts, signaling_state::SignalingStateExts},
+    extensions::{clients::ClientsExts, signaling_state::SignalingStateExts, str::StrExts},
     state::{
         signaling_state::{Peer, RequestedRoom, RoomId},
         AppState,
@@ -37,8 +37,17 @@ pub async fn signaling_handler(
     let mut address = addr;
     for (key, value) in headers.iter() {
         if key.as_str().to_lowercase() == "x-forwarded-for" {
-            let fordwarded_for = value.to_str().unwrap();
-            address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
+            if value.to_str().unwrap().contains(",") {
+                let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
+
+                if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
+                    address = format!("{ip}:{}", addr.port()).parse().unwrap();
+                }
+            } else {
+                let fordwarded_for = value.to_str().unwrap();
+                address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
+                break;
+            }
         }
     }
 
