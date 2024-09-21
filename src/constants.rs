@@ -1,6 +1,6 @@
 /// This file contains all the constants used in the project.
 /// The interval are in seconds.
-pub static MONITOR_JOB_INTERVAL: u64 = 60;
+pub static MONITOR_JOB_INTERVAL: u64 = 3600; // 1 hour
 pub static PURGE_EMPTY_LOBBIES_JOB_INTERVAL: u64 = 10;
 pub static KEEP_ALIVE_INTERVAL: u64 = 10;
 
