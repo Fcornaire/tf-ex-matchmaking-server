@@ -28,6 +28,11 @@ pub async fn matchmaking_handler(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    info!(
+        "New connection from raw {} with  headers {:?}",
+        addr, headers
+    );
+
     let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
         user_agent.to_string()
     } else {
@@ -36,19 +41,26 @@ pub async fn matchmaking_handler(
 
     let mut address: SocketAddr = addr;
     for (key, value) in headers.iter() {
-        if key.as_str().to_lowercase() == "x-forwarded-for" {
-            if value.to_str().unwrap().contains(",") {
-                let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
-
-                if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
-                    address = format!("{ip}:{}", addr.port()).parse().unwrap();
-                }
-            } else {
-                let fordwarded_for = value.to_str().unwrap();
-                address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
-                break;
-            }
+        if key.as_str().to_lowercase() == "x-tfex-real-ip" {
+            address = format!("{}:{}", value.to_str().unwrap(), addr.port())
+                .parse()
+                .unwrap();
+            break;
         }
+
+        // if key.as_str().to_lowercase() == "x-forwarded-for" {
+        //     if value.to_str().unwrap().contains(",") {
+        //         let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
+
+        //         if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
+        //             address = format!("{ip}:{}", addr.port()).parse().unwrap();
+        //         }
+        //     } else {
+        //         let fordwarded_for = value.to_str().unwrap();
+        //         address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
+        //         break;
+        //     }
+        // }
     }
 
     info!("`{user_agent}` at {address} connected.");
