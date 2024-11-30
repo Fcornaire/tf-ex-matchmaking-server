@@ -21,7 +21,8 @@ use self::{
     signaling_state::SignalingState,
 };
 
-pub type Clients = Arc<Mutex<HashMap<SocketAddr, Client>>>;
+pub type IpV4V6 = (SocketAddr, Option<SocketAddr>);
+pub type Clients = Arc<Mutex<HashMap<IpV4V6, Client>>>;
 pub type Lobbies = Arc<Mutex<Vec<Lobby>>>;
 
 #[derive(Debug, Clone)]
@@ -51,13 +52,15 @@ impl AppState {
     pub async fn update_alive_client(&self, addr: SocketAddr) -> Result<(), String> {
         let mut clients = self.clients.lock().await;
 
-        let client_res = clients.get_mut(&addr);
+        let client_res = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr);
 
         if client_res.is_none() {
             return Err("Client not found".to_string());
         }
 
-        let client = client_res.unwrap();
+        let client = client_res.unwrap().1;
 
         if client.is_alive() {
             client.alive();
@@ -94,8 +97,10 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn add_new_client(&self, addr: SocketAddr) -> Result<(), String> {
-        let location = self.geoip_client.get_location(addr.ip()).await;
+    pub async fn add_new_client(&self, addrs: Vec<SocketAddr>) -> Result<(), String> {
+        let ipv4 = addrs[0];
+
+        let location = self.geoip_client.get_location(ipv4.ip()).await;
 
         if location.is_err() {
             return Err("Could not get location".to_string());
@@ -103,7 +108,13 @@ impl AppState {
 
         let client = Client::new(location.unwrap());
 
-        self.clients.lock().await.insert(addr, client);
+        if addrs.len() == 2 {
+            let ipv6 = addrs[1];
+            self.clients.lock().await.insert((ipv4, Some(ipv6)), client);
+            return Ok(());
+        }
+
+        self.clients.lock().await.insert((ipv4, None), client);
 
         Ok(())
     }
@@ -133,7 +144,11 @@ impl AppState {
         }
 
         let mut clients = self.clients.lock().await;
-        let client = clients.get_mut(&addr).unwrap();
+        let client = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
+            .unwrap()
+            .1;
 
         client.name = lobby.name();
         client.room = Some(Room::new(lobby.room_id().clone()));
@@ -193,16 +208,18 @@ impl AppState {
             return Err(format!("Lobby {} is full", room_id));
         }
 
-        let mut clients: tokio::sync::MutexGuard<'_, HashMap<SocketAddr, Client>> =
+        let mut clients: tokio::sync::MutexGuard<'_, HashMap<IpV4V6, Client>> =
             self.clients.lock().await;
 
-        let client_res = clients.get_mut(&addr);
+        let client_res = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr);
 
         if client_res.is_none() {
             return Err("Client not found".to_string());
         }
 
-        let client = client_res.unwrap();
+        let client = client_res.unwrap().1;
 
         client.room = Some(Room::new(room_id.clone()));
         client.room_chat = Some(Room::new(lobby.room_chat_id().clone()));
@@ -252,13 +269,15 @@ impl AppState {
 
         let mut clients = self.clients.lock().await;
 
-        let client_res = clients.get_mut(&addr);
+        let client_res = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr);
 
         if client_res.is_none() {
             return Err("Client not found".to_string());
         }
 
-        let client: &mut Client = client_res.unwrap();
+        let client: &mut Client = client_res.unwrap().1;
 
         client.room = None;
 

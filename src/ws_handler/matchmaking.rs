@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{Ipv6Addr, SocketAddr},
+    str::FromStr,
+    sync::Arc,
+};
 
 use axum::{
     extract::{ConnectInfo, State},
@@ -39,48 +43,56 @@ pub async fn matchmaking_handler(
         String::from("Unknown browser")
     };
 
-    let mut address: SocketAddr = addr;
+    let mut addressv4: Option<SocketAddr> = Some(addr);
+    let mut addressv6: Option<SocketAddr> = None;
+
     for (key, value) in headers.iter() {
-        if key.as_str().to_lowercase() == "x-tfex-real-ip" {
-            address = format!("{}:{}", value.to_str().unwrap(), addr.port())
-                .parse()
-                .unwrap();
-            break;
+        match key.as_str().to_lowercase().as_str() {
+            "x-tfex-real-ipv4" => {
+                addressv4 = Some(
+                    format!("{}:{}", value.to_str().unwrap(), addr.port())
+                        .parse()
+                        .unwrap(),
+                );
+            }
+            "x-tfex-real-ipv6" => {
+                let ipv6 = Ipv6Addr::from_str(value.to_str().unwrap());
+                addressv6 = Some(SocketAddr::new(
+                    std::net::IpAddr::V6(ipv6.unwrap()),
+                    addr.port(),
+                ));
+            }
+            _ => {}
         }
-
-        // if key.as_str().to_lowercase() == "x-forwarded-for" {
-        //     if value.to_str().unwrap().contains(",") {
-        //         let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
-
-        //         if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
-        //             address = format!("{ip}:{}", addr.port()).parse().unwrap();
-        //         }
-        //     } else {
-        //         let fordwarded_for = value.to_str().unwrap();
-        //         address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
-        //         break;
-        //     }
-        // }
     }
 
-    info!("`{user_agent}` at {address} connected.");
+    info!(
+        "`{user_agent}` at ipv4 {:#?} / ipv6 {:#?} connected.",
+        addressv4, addressv6
+    );
 
-    ws.on_upgrade(move |socket| handle_socket(socket, address, state))
+    let ips: Vec<SocketAddr> = vec![addressv4, addressv6]
+        .into_iter()
+        .filter_map(|x| x)
+        .collect();
+
+    ws.on_upgrade(move |socket| handle_socket(socket, ips, state.clone()))
 }
 
 /// Actual websocket statemachine (one will be spawned per connection)
 pub async fn handle_socket(
     socket: WebSocket<ServerMsg, ClientMsg>,
-    ip: SocketAddr,
+    ips: Vec<SocketAddr>,
     state: Arc<AppState>,
 ) {
+    let ip = ips.clone().into_iter().find(|x| x.is_ipv4()).unwrap();
     let client = state.clone().clients.get_client(ip).await;
     if client.is_some() {
         info!("Client {} already connected", ip);
         return;
     }
 
-    let res = state.clone().add_new_client(ip).await;
+    let res = state.clone().add_new_client(ips.clone()).await;
     if res.is_err() {
         info!("Client {} could not be added : {}", ip, res.unwrap_err());
         return;
@@ -326,7 +338,10 @@ pub async fn handle_socket(
             interval.tick().await;
             let mut clients = cloned_state_keep_alive.clients.lock().await;
 
-            let client = clients.iter_mut().find(|c| (*c.0) == ip).map(|c| c.1);
+            let client = clients
+                .iter_mut()
+                .find(|((ipv4, _), _)| *ipv4 == ip)
+                .map(|c| c.1);
 
             if client.is_none() {
                 tracing::info!("Client {} not found", ip);

@@ -17,7 +17,10 @@ pub trait ClientsExts {
 impl ClientsExts for Clients {
     async fn get_client(&self, addr: SocketAddr) -> Option<Client> {
         let clients = self.lock().await;
-        clients.get(&addr).cloned()
+        clients
+            .iter()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
+            .map(|(_, client)| client.clone())
     }
 
     async fn get_client_by_peer_id(&self, peer_id: String) -> Option<Client> {
@@ -32,7 +35,9 @@ impl ClientsExts for Clients {
         let clients = self.lock().await;
         clients
             .iter()
-            .filter(|(ip, _client)| ip.ip() == addr)
+            .filter(|((ipv4, ipv6), _client)| {
+                ipv4.ip() == addr || ipv6.is_some() && ipv6.unwrap().ip() == addr
+            })
             .find(|(_, client)| {
                 (client.room.is_some()
                     && client.room.as_ref().unwrap().id() == room_id
@@ -48,7 +53,7 @@ impl ClientsExts for Clients {
         let mut clients = self.lock().await;
         clients
             .iter_mut()
-            .filter(|(ip, _client)| ip.ip() == addr)
+            .filter(|((ipv4, _), _client)| ipv4.ip() == addr)
             .find(|(_, client)| {
                 (client.room.is_some()
                     && client.room.as_ref().unwrap().id() == room_id
@@ -70,6 +75,16 @@ impl ClientsExts for Clients {
 
     async fn remove_client(&mut self, addr: SocketAddr) -> Option<Client> {
         let mut clients = self.lock().await;
-        clients.remove(&addr)
+        let mut removed = None;
+        let to_remove_key = {
+            let to_remove = clients
+                .iter()
+                .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
+                .unwrap();
+            removed = Some(to_remove.clone().1.clone());
+            to_remove.0.clone()
+        };
+        clients.remove(&to_remove_key);
+        removed
     }
 }
