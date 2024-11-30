@@ -10,7 +10,13 @@ use axum::{
 use futures::{stream::SplitSink, StreamExt};
 use headers::HeaderMap;
 use matchbox_protocol::{JsonPeerEvent, JsonPeerRequest, PeerRequest};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{sync::mpsc, time::interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info, warn};
@@ -41,7 +47,15 @@ pub async fn signaling_handler(
                 let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
 
                 if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
-                    address = format!("{ip}:{}", addr.port()).parse().unwrap();
+                    let ipv6_result = Ipv6Addr::from_str(ip);
+                    if let Ok(ipv6) = ipv6_result {
+                        address = SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port());
+                    } else {
+                        let ipv4_result = ip.parse::<Ipv4Addr>();
+                        if let Ok(ipv4) = ipv4_result {
+                            address = SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port());
+                        }
+                    }
                 }
             } else {
                 let fordwarded_for = value.to_str().unwrap();
