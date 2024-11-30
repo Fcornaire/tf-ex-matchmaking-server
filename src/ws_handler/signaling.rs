@@ -30,6 +30,26 @@ use crate::{
     },
 };
 
+fn update_address_from_header(value: &str, addr: SocketAddr) -> Option<SocketAddr> {
+    if value.contains(",") {
+        let splitted = value.split(",").collect::<Vec<&str>>();
+        if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
+            if let Ok(ipv6) = Ipv6Addr::from_str(ip) {
+                return Some(SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port()));
+            } else if let Ok(ipv4) = ip.parse::<Ipv4Addr>() {
+                return Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
+            }
+        }
+    } else {
+        if let Ok(ipv6) = Ipv6Addr::from_str(value) {
+            return Some(SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port()));
+        } else if let Ok(ipv4) = value.parse::<Ipv4Addr>() {
+            return Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
+        }
+    }
+    None
+}
+
 /// The handler for the HTTP request to upgrade to WebSockets.
 /// This is the last point where we can extract TCP/IP metadata such as IP address of the client.
 pub async fn signaling_handler(
@@ -43,24 +63,8 @@ pub async fn signaling_handler(
     let mut address = addr;
     for (key, value) in headers.iter() {
         if key.as_str().to_lowercase() == "x-forwarded-for" {
-            if value.to_str().unwrap().contains(",") {
-                let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
-
-                if let Some(ip) = splitted.iter().find(|ip| !ip.is_an_ip_and_private()) {
-                    let ipv6_result = Ipv6Addr::from_str(ip);
-                    if let Ok(ipv6) = ipv6_result {
-                        address = SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port());
-                    } else {
-                        let ipv4_result = ip.parse::<Ipv4Addr>();
-                        if let Ok(ipv4) = ipv4_result {
-                            address = SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port());
-                        }
-                    }
-                }
-            } else {
-                let fordwarded_for = value.to_str().unwrap();
-                address = format!("{fordwarded_for}:{}", addr.port()).parse().unwrap();
-                break;
+            if let Some(new_address) = update_address_from_header(value.to_str().unwrap(), addr) {
+                address = new_address;
             }
         }
     }
