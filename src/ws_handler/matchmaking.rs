@@ -48,6 +48,26 @@ pub async fn matchmaking_handler(
 
     for (key, value) in headers.iter() {
         match key.as_str().to_lowercase().as_str() {
+            "x-tfex-real-ipv4" => {
+                if addressv4.is_some() {
+                    continue;
+                }
+                addressv4 = Some(
+                    format!("{}:{}", value.to_str().unwrap(), addr.port())
+                        .parse()
+                        .unwrap(),
+                );
+            }
+            "x-tfex-real-ipv6" => {
+                if addressv6.is_some() {
+                    continue;
+                }
+                let ipv6 = Ipv6Addr::from_str(value.to_str().unwrap());
+                addressv6 = Some(SocketAddr::new(
+                    std::net::IpAddr::V6(ipv6.unwrap()),
+                    addr.port(),
+                ));
+            }
             "x-forwarded-for" => {
                 if value.to_str().unwrap().contains(",") {
                     let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
@@ -75,26 +95,6 @@ pub async fn matchmaking_handler(
                         addressv4 = Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
                     }
                 }
-            }
-            "x-tfex-real-ipv4" => {
-                if addressv4.is_some() {
-                    continue;
-                }
-                addressv4 = Some(
-                    format!("{}:{}", value.to_str().unwrap(), addr.port())
-                        .parse()
-                        .unwrap(),
-                );
-            }
-            "x-tfex-real-ipv6" => {
-                if addressv6.is_some() {
-                    continue;
-                }
-                let ipv6 = Ipv6Addr::from_str(value.to_str().unwrap());
-                addressv6 = Some(SocketAddr::new(
-                    std::net::IpAddr::V6(ipv6.unwrap()),
-                    addr.port(),
-                ));
             }
 
             _ => {}
