@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv6Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::Arc,
 };
@@ -48,7 +48,38 @@ pub async fn matchmaking_handler(
 
     for (key, value) in headers.iter() {
         match key.as_str().to_lowercase().as_str() {
+            "x-forwarded-for" => {
+                if value.to_str().unwrap().contains(",") {
+                    let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
+                    for ip in splitted.iter().filter(|ip| !ip.is_an_ip_and_private()) {
+                        if let Ok(ipv6) = Ipv6Addr::from_str(ip) {
+                            if addressv6.is_some() {
+                                continue;
+                            }
+
+                            addressv6 =
+                                Some(SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port()));
+                        } else if let Ok(ipv4) = ip.parse::<Ipv4Addr>() {
+                            if addressv4.is_some() {
+                                continue;
+                            }
+
+                            addressv4 =
+                                Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
+                        }
+                    }
+                } else {
+                    if let Ok(ipv6) = Ipv6Addr::from_str(value.to_str().unwrap()) {
+                        addressv6 = Some(SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port()));
+                    } else if let Ok(ipv4) = value.to_str().unwrap().parse::<Ipv4Addr>() {
+                        addressv4 = Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
+                    }
+                }
+            }
             "x-tfex-real-ipv4" => {
+                if addressv4.is_some() {
+                    continue;
+                }
                 addressv4 = Some(
                     format!("{}:{}", value.to_str().unwrap(), addr.port())
                         .parse()
@@ -56,12 +87,16 @@ pub async fn matchmaking_handler(
                 );
             }
             "x-tfex-real-ipv6" => {
+                if addressv6.is_some() {
+                    continue;
+                }
                 let ipv6 = Ipv6Addr::from_str(value.to_str().unwrap());
                 addressv6 = Some(SocketAddr::new(
                     std::net::IpAddr::V6(ipv6.unwrap()),
                     addr.port(),
                 ));
             }
+
             _ => {}
         }
     }
