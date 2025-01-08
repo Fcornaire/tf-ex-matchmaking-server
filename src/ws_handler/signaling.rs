@@ -69,7 +69,7 @@ pub async fn signaling_handler(
         }
     }
 
-    info!("`{address}` connected.");
+    info!("`Signaling: {address}` connected.");
 
     let room_id = room_id.map(|path| path.0).unwrap_or_default();
     let next = params

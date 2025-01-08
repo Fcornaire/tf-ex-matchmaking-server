@@ -43,7 +43,7 @@ pub async fn matchmaking_handler(
         String::from("Unknown browser")
     };
 
-    let mut addressv4: Option<SocketAddr> = Some(addr);
+    let mut addressv4: Option<SocketAddr> = None;
     let mut addressv6: Option<SocketAddr> = None;
 
     for (key, value) in headers.iter() {
