@@ -175,6 +175,7 @@ impl AppState {
             .room_chat_id(lobby.room_chat_id())
             .game_data(lobby.game_data())
             .players(vec![host])
+            .mods(lobby.mods())
             .build();
 
         lobbies.push(final_lobby.clone());

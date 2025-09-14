@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -10,6 +12,13 @@ pub enum EndGameChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+pub struct Mod {
+    name: String,
+    data: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Lobby {
     name: String,
     room_id: String,
@@ -18,6 +27,7 @@ pub struct Lobby {
     spectators: Vec<Player>,
     game_data: GameData,
     end_game_choice: Option<Vec<(String, EndGameChoice)>>,
+    mods: Vec<Mod>,
 }
 
 impl Lobby {
@@ -43,6 +53,10 @@ impl Lobby {
 
     pub fn room_chat_id(&self) -> String {
         self.room_chat_id.clone()
+    }
+
+    pub fn mods(&self) -> Vec<Mod> {
+        self.mods.clone()
     }
 
     pub fn end_game_choice(&self) -> Option<Vec<(String, EndGameChoice)>> {
@@ -190,6 +204,7 @@ pub struct LobbyBuilder {
     room_chat_id: Option<String>,
     players: Option<Vec<Player>>,
     game_data: Option<GameData>,
+    mods: Option<Vec<Mod>>,
 }
 
 impl LobbyBuilder {
@@ -222,6 +237,11 @@ impl LobbyBuilder {
         self
     }
 
+    pub fn mods(mut self, mods: Vec<Mod>) -> Self {
+        self.mods = Some(mods);
+        self
+    }
+
     pub fn build(self) -> Lobby {
         Lobby {
             name: self.name.expect("lobby name is required"),
@@ -231,6 +251,7 @@ impl LobbyBuilder {
             room_chat_id: self.room_chat_id.expect("lobby room chat id is required"),
             spectators: vec![],
             end_game_choice: None,
+            mods: self.mods.unwrap_or_default(),
         }
     }
 }

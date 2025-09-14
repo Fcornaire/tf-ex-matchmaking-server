@@ -101,6 +101,10 @@ pub async fn matchmaking_handler(
         }
     }
 
+    if addressv4.is_none() && addressv6.is_none() {
+        addressv4 = Some(addr);
+    }
+
     info!(
         "`{user_agent}` at ipv4 {:#?} / ipv6 {:#?} connected.",
         addressv4, addressv6
