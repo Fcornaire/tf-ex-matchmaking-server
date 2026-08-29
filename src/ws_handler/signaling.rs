@@ -8,81 +8,47 @@ use axum::{
     Error,
 };
 use futures::{stream::SplitSink, StreamExt};
-use headers::HeaderMap;
 use matchbox_protocol::{JsonPeerEvent, JsonPeerRequest, PeerRequest};
-use std::{
-    collections::HashMap,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info, warn};
 
 use crate::{
     constants::KEEP_ALIVE_INTERVAL,
-    extensions::{clients::ClientsExts, signaling_state::SignalingStateExts, str::StrExts},
+    extensions::{clients::ClientsExts, signaling_state::SignalingStateExts},
     state::{
         signaling_state::{Peer, RequestedRoom, RoomId},
         AppState,
     },
 };
 
-fn update_address_from_header(value: &str, addr: SocketAddr) -> Option<SocketAddr> {
-    if value.contains(",") {
-        let splitted = value.split(",").collect::<Vec<&str>>();
-        for ip in splitted.iter().filter(|ip| !ip.is_an_ip_and_private()) {
-            if let Ok(ipv4) = ip.parse::<Ipv4Addr>() {
-                return Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
-            } else if let Ok(ipv6) = Ipv6Addr::from_str(ip) {
-                return Some(SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port()));
-            }
-        }
-    } else {
-        if let Ok(ipv6) = Ipv6Addr::from_str(value) {
-            return Some(SocketAddr::new(std::net::IpAddr::V6(ipv6), addr.port()));
-        } else if let Ok(ipv4) = value.parse::<Ipv4Addr>() {
-            return Some(SocketAddr::new(std::net::IpAddr::V4(ipv4), addr.port()));
-        }
-    }
-    None
-}
-
 /// The handler for the HTTP request to upgrade to WebSockets.
-/// This is the last point where we can extract TCP/IP metadata such as IP address of the client.
 pub async fn signaling_handler(
     ws: WebSocketUpgrade,
     room_id: Option<Path<RoomId>>,
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    let mut address = addr;
-    for (key, value) in headers.iter() {
-        if key.as_str().to_lowercase() == "x-forwarded-for" {
-            if let Some(new_address) = update_address_from_header(value.to_str().unwrap(), addr) {
-                address = new_address;
-            }
-        }
-    }
-
-    info!("`Signaling: {address}` connected.");
+    info!("`Signaling: {addr}` connected.");
 
     let room_id = room_id.map(|path| path.0).unwrap_or_default();
     let next = params
         .get("next")
         .and_then(|next| next.parse::<usize>().ok());
+    let requested_peer = params
+        .get("peer")
+        .and_then(|peer| uuid::Uuid::parse_str(peer).ok());
 
     // Finalize the upgrade process by returning upgrade callback to client
     ws.on_upgrade(move |websocket| {
         handle_ws(
             websocket,
             state,
-            address,
+            addr,
             RequestedRoom { id: room_id, next },
+            requested_peer,
         )
     })
 }
@@ -115,34 +81,35 @@ async fn handle_ws(
     state: Arc<AppState>,
     addr: SocketAddr,
     requested_room: RequestedRoom,
+    requested_peer: Option<uuid::Uuid>,
 ) {
     let (ws_sender, mut ws_receiver) = websocket.split();
     let sender = spawn_sender_task(ws_sender);
 
-    let mut peer_uuid = uuid::Uuid::default().into();
+    let room_id: String = requested_room.clone().id.into();
 
-    {
-        let client = state
-            .clients
-            .get_client_by_ip_not_live(addr.ip(), requested_room.clone().id.into())
-            .await
-            .unwrap();
-
-        let peer = client.peer_id(requested_room.clone().id.into());
-
-        if let Some(peer) = peer {
-            peer_uuid = uuid::Uuid::parse_str(&peer).unwrap().into();
-        } else {
-            panic!("Peer not found")
+    let peer_uuid: matchbox_protocol::PeerId = match requested_peer {
+        Some(uuid) => uuid.into(),
+        None => {
+            warn!("Signaling {addr}: no peer token for room {room_id}, refusing");
+            return;
         }
+    };
+
+    if state
+        .clients
+        .get_client_by_room_peer(room_id.clone(), peer_uuid.0.to_string())
+        .await
+        .is_none()
+    {
+        warn!("Signaling {addr}: peer {peer_uuid:?} is not a member of room {room_id}, refusing");
+        return;
     }
 
-    {
-        state
-            .clients
-            .set_client_live_by_ip(addr.ip(), requested_room.clone().id.into(), true)
-            .await;
-    }
+    state
+        .clients
+        .set_client_live_by_peer_id(peer_uuid.0.to_string(), true)
+        .await;
 
     {
         let mut add_peer_state = state.signaling.lock().await;
@@ -226,7 +193,7 @@ async fn handle_ws(
 
             let client = cloned_state_loop
                 .clients
-                .get_client_by_peer_id(requested_room_clone.clone().id.into())
+                .get_client_in_room(requested_room_clone.clone().id.into())
                 .await;
 
             if client.is_none() {

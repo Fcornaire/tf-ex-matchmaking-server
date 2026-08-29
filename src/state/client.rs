@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::services::geoip::Location;
 
 #[derive(Debug, Clone)]
@@ -5,8 +7,9 @@ pub struct Client {
     pub name: String,
     pub location: Location,
     pub room: Option<Room>,
-    pub room_chat: Option<Room>,
     pub alive_counter: u8,
+    last_keep_alive_sent: Option<Instant>,
+    pub last_private_join_attempt: Option<Instant>,
 }
 
 impl Client {
@@ -15,9 +18,22 @@ impl Client {
             name: "".to_string(),
             location,
             room: None,
-            room_chat: None,
             alive_counter: 0,
+            last_keep_alive_sent: None,
+            last_private_join_attempt: None,
         }
+    }
+
+    pub fn keep_alive_sent(&mut self) {
+        self.last_keep_alive_sent = Some(Instant::now());
+    }
+
+    pub fn take_keep_alive_rtt(&mut self) -> Option<u32> {
+        self.last_keep_alive_sent.take().map(|sent| {
+            let micros = sent.elapsed().as_micros();
+
+            ((micros + 500) / 1000).min(u32::MAX as u128) as u32
+        })
     }
 
     pub fn alive(&mut self) {
@@ -47,22 +63,12 @@ impl Client {
             }
         }
 
-        if let Some(room_chat) = &self.room_chat {
-            if room_chat.id() == room_id {
-                return Some(room_chat.peer_id());
-            }
-        }
-
         None
     }
 
     pub fn is_peer_id_live(&self, peer_id: String) -> bool {
         if let Some(room) = &self.room {
             return room.peer.as_ref().unwrap().id() == peer_id;
-        }
-
-        if let Some(room_chat) = &self.room_chat {
-            return room_chat.peer.as_ref().unwrap().id() == peer_id;
         }
 
         false
@@ -74,24 +80,12 @@ impl Client {
                 room.peer.as_mut().unwrap().set_live(is_live);
             }
         }
-
-        if let Some(room_chat) = &mut self.room_chat {
-            if room_chat.id() == room_id {
-                room_chat.peer.as_mut().unwrap().set_live(is_live);
-            }
-        }
     }
 
     pub fn set_live_by_peer_id(&mut self, peer_id: String, is_live: bool) {
         if let Some(room) = &mut self.room {
             if room.peer.as_ref().unwrap().id() == peer_id {
                 room.peer.as_mut().unwrap().set_live(is_live);
-            }
-        }
-
-        if let Some(room_chat) = &mut self.room_chat {
-            if room_chat.peer.as_ref().unwrap().id() == peer_id {
-                room_chat.peer.as_mut().unwrap().set_live(is_live);
             }
         }
     }

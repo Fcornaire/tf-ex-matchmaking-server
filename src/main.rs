@@ -5,6 +5,7 @@ pub mod jobs;
 pub mod msg;
 pub mod services;
 pub mod state;
+pub mod telemetry;
 pub mod ws_handler;
 
 use axum::{routing::get, Router};
@@ -31,8 +32,8 @@ use args::Args;
 
 lazy_static! {
     pub static ref ARGS: Arc<Args> = Arc::new(Args::new(
-        std::env::var("GEOIP_CLIENT_ID").unwrap(),
-        std::env::var("GEOIP_API_KEY").unwrap()
+        std::env::var("GEOIP_CLIENT_ID").ok(),
+        std::env::var("GEOIP_API_KEY").ok()
     ));
 }
 
@@ -47,8 +48,29 @@ async fn main() {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
+    if ARGS.geoip_credentials().is_some() {
+        tracing::info!("GeoIP enabled");
+    } else if ARGS.geoip_client_id.is_some() != ARGS.geoip_api_key.is_some() {
+        tracing::warn!("Only one of GEOIP_CLIENT_ID / GEOIP_API_KEY is set; GeoIP disabled");
+    } else {
+        tracing::info!("GeoIP disabled (GEOIP_CLIENT_ID / GEOIP_API_KEY not set); quickplay will treat all players as equal distance");
+    }
+
+    let metrics_handle = telemetry::install();
+
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     let state = Arc::new(AppState::new());
+
+    let metrics_port = std::env::var("METRICS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4738);
+
+    tokio::spawn(telemetry::serve(
+        state.clone(),
+        metrics_handle,
+        metrics_port,
+    ));
 
     // build our application with some routes
     let app = Router::new()

@@ -12,6 +12,7 @@ use axum::{
 use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
 use futures::{SinkExt, StreamExt};
 use headers::HeaderMap;
+use metrics::counter;
 use tokio::{
     sync::mpsc,
     time::{interval, Duration},
@@ -22,7 +23,8 @@ use crate::{
     constants::KEEP_ALIVE_INTERVAL,
     extensions::{clients::ClientsExts, str::StrExts},
     msg::{ClientMsg, ServerMsg},
-    state::{lobby::Lobby, AppState},
+    state::{lobby::Lobby, AppState, QuickPlayOutcome},
+    telemetry,
 };
 
 pub async fn matchmaking_handler(
@@ -48,26 +50,6 @@ pub async fn matchmaking_handler(
 
     for (key, value) in headers.iter() {
         match key.as_str().to_lowercase().as_str() {
-            "x-tfex-real-ipv4" => {
-                if addressv4.is_some() {
-                    continue;
-                }
-                addressv4 = Some(
-                    format!("{}:{}", value.to_str().unwrap(), addr.port())
-                        .parse()
-                        .unwrap(),
-                );
-            }
-            "x-tfex-real-ipv6" => {
-                if addressv6.is_some() {
-                    continue;
-                }
-                let ipv6 = Ipv6Addr::from_str(value.to_str().unwrap());
-                addressv6 = Some(SocketAddr::new(
-                    std::net::IpAddr::V6(ipv6.unwrap()),
-                    addr.port(),
-                ));
-            }
             "x-forwarded-for" => {
                 if value.to_str().unwrap().contains(",") {
                     let splitted = value.to_str().unwrap().split(",").collect::<Vec<&str>>();
@@ -124,7 +106,14 @@ pub async fn handle_socket(
     ips: Vec<SocketAddr>,
     state: Arc<AppState>,
 ) {
-    let ip = ips.clone().into_iter().find(|x| x.is_ipv4()).unwrap();
+    let Some(ip) = ips
+        .iter()
+        .find(|x| x.is_ipv4())
+        .or_else(|| ips.first())
+        .copied()
+    else {
+        return;
+    };
     let client = state.clone().clients.get_client(ip).await;
     if client.is_some() {
         info!("Client {} already connected", ip);
@@ -150,7 +139,9 @@ pub async fn handle_socket(
     });
 
     match state.clone().add_connexion(ip, sender.clone()).await {
-        Ok(()) => {}
+        Ok(()) => {
+            counter!(telemetry::CONNECTIONS_TOTAL).increment(1);
+        }
         Err(err) => {
             warn!("Client {} could not be added : {}", ip, err);
             info!("Thus Websocket context {} destroyed", ip);
@@ -166,7 +157,9 @@ pub async fn handle_socket(
 
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
-            debug!("Received message: {:?}", msg);
+            if !matches!(msg, Ok(Message::Item(ClientMsg::KeepAlive {}))) {
+                debug!("Received message: {:?}", msg);
+            }
             match msg {
                 Ok(Message::Item(item)) => match item {
                     ClientMsg::KeepAlive {} => {
@@ -174,6 +167,12 @@ pub async fn handle_socket(
                             Ok(()) => {}
                             Err(err) => {
                                 error!("Error when trying to make client alive : {}", err);
+                            }
+                        }
+
+                        if let Some(room_id) = cloned_state_recv.record_keep_alive_rtt(ip).await {
+                            if let Err(err) = cloned_state_recv.send_ping_update(room_id).await {
+                                error!("Error broadcasting ping update : {}", err);
                             }
                         }
                     }
@@ -189,6 +188,8 @@ pub async fn handle_socket(
                     }
                     ClientMsg::CreateLobby { mut lobby } => {
                         info!("Client {} want to create a lobby", ip);
+
+                        cloned_state_recv.exit_quick_play(ip).await;
 
                         match cloned_state_recv.add_lobby(&mut lobby, ip).await {
                             Ok(final_lobby) => {
@@ -224,25 +225,36 @@ pub async fn handle_socket(
                             ip
                         );
 
+                        cloned_state_recv.exit_quick_play(ip).await;
+
                         match cloned_state_recv
                             .join_lobby(room_id.clone(), ip, name, is_player)
                             .await
                         {
-                            Ok((room_peer_id, room_chat_peer_id)) => {
+                            Ok(room_peer_id) => {
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::JoinLobbyResponse {
                                         success: true,
                                         message: "".to_string(),
-                                        room_peer_id,
-                                        room_chat_peer_id,
+                                        room_peer_id: room_peer_id.clone(),
                                     }))
                                     .await
                                     .unwrap();
 
-                                cloned_state_recv
-                                    .send_lobby_update(room_id.clone())
-                                    .await
-                                    .unwrap();
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+
+                                if !is_player {
+                                    cloned_state_recv
+                                        .notify_host_of_late_spectator(&room_id, &room_peer_id)
+                                        .await;
+                                }
                             }
                             Err(err) => {
                                 warn!("Error client {} joining lobby : {}", ip, err);
@@ -252,7 +264,180 @@ pub async fn handle_socket(
                                         success: false,
                                         message: err,
                                         room_peer_id: "".to_string(),
-                                        room_chat_peer_id: "".to_string(),
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    ClientMsg::EnterQuickPlay { name, is_wide } => {
+                        info!(
+                            "Client {} entered the quickplay queue (wide: {is_wide})",
+                            ip
+                        );
+
+                        let outcome = cloned_state_recv.enter_quick_play(ip, name, is_wide).await;
+
+                        let outcome_label = match &outcome {
+                            QuickPlayOutcome::Queued { .. } => "queued",
+                            QuickPlayOutcome::Seated { .. } => "seated",
+                            QuickPlayOutcome::Paired { .. } => "paired",
+                            QuickPlayOutcome::Failed { .. } => "failed",
+                        };
+                        counter!(telemetry::QUICKPLAY_ENTER_TOTAL, "outcome" => outcome_label)
+                            .increment(1);
+
+                        match outcome {
+                            QuickPlayOutcome::Queued { searching } => {
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::QuickPlayStatus {
+                                        queued: true,
+                                        searching,
+                                        message: "".to_string(),
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                            QuickPlayOutcome::Seated {
+                                lobby,
+                                room_peer_id,
+                            } => {
+                                info!(
+                                    "Client {} seated into quickplay lobby {}",
+                                    ip,
+                                    lobby.room_id()
+                                );
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::QuickPlayMatchFound {
+                                        lobby: lobby.clone(),
+                                        room_peer_id,
+                                    }))
+                                    .await
+                                    .unwrap();
+
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(lobby.room_id()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+                            }
+                            QuickPlayOutcome::Paired {
+                                lobby,
+                                caller_peer_id,
+                                partner_addr,
+                                partner_peer_id,
+                            } => {
+                                info!(
+                                    "Client {} paired with {} in quickplay lobby {}",
+                                    ip,
+                                    partner_addr,
+                                    lobby.room_id()
+                                );
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::QuickPlayMatchFound {
+                                        lobby: lobby.clone(),
+                                        room_peer_id: caller_peer_id,
+                                    }))
+                                    .await
+                                    .unwrap();
+
+                                cloned_state_recv
+                                    .send_msg_to_addrs(
+                                        &[partner_addr],
+                                        ServerMsg::QuickPlayMatchFound {
+                                            lobby,
+                                            room_peer_id: partner_peer_id,
+                                        },
+                                    )
+                                    .await;
+                            }
+                            QuickPlayOutcome::Failed { message } => {
+                                warn!("Quickplay enter failed for {} : {}", ip, message);
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::QuickPlayStatus {
+                                        queued: false,
+                                        searching: 0,
+                                        message,
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    ClientMsg::ExitQuickPlay {} => {
+                        info!("Client {} left the quickplay queue", ip);
+
+                        let searching = cloned_state_recv.exit_quick_play(ip).await;
+
+                        send_task_in_rcv
+                            .send(Message::Item(ServerMsg::QuickPlayStatus {
+                                queued: false,
+                                searching,
+                                message: "".to_string(),
+                            }))
+                            .await
+                            .unwrap();
+                    }
+                    ClientMsg::JoinPrivate {
+                        code,
+                        name,
+                        is_player,
+                    } => {
+                        info!(
+                            "Client {} want to join a private lobby by code, is a player {is_player}",
+                            ip
+                        );
+
+                        cloned_state_recv.exit_quick_play(ip).await;
+
+                        match cloned_state_recv
+                            .join_private(code, ip, name, is_player)
+                            .await
+                        {
+                            Ok((lobby, room_peer_id)) => {
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::PrivateJoinResult {
+                                        success: true,
+                                        message: "".to_string(),
+                                        room_peer_id: room_peer_id.clone(),
+                                        lobby: Some(lobby.clone()),
+                                    }))
+                                    .await
+                                    .unwrap();
+
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(lobby.room_id()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+
+                                if !is_player {
+                                    cloned_state_recv
+                                        .notify_host_of_late_spectator(
+                                            &lobby.room_id(),
+                                            &room_peer_id,
+                                        )
+                                        .await;
+                                }
+                            }
+                            Err(err) => {
+                                warn!("Error client {} joining private lobby : {}", ip, err);
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::PrivateJoinResult {
+                                        success: false,
+                                        message: err,
+                                        room_peer_id: "".to_string(),
+                                        lobby: None,
                                     }))
                                     .await
                                     .unwrap();
@@ -274,14 +459,17 @@ pub async fn handle_socket(
                                     }
                                 }
 
-                                cloned_state_recv
-                                    .send_lobby_update(room_id.clone())
-                                    .await
-                                    .unwrap();
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
                             }
                             Err(err) => {
                                 error!("Error updating player : {}", err);
-                                break;
                             }
                         }
                     }
@@ -290,10 +478,14 @@ pub async fn handle_socket(
 
                         match cloned_state_recv.remove_from_lobby(ip).await {
                             Ok(room_id) => {
-                                cloned_state_recv
-                                    .send_lobby_update(room_id.clone())
-                                    .await
-                                    .unwrap();
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
 
                                 cloned_state_recv.purge_lobby_async().await;
 
@@ -313,8 +505,19 @@ pub async fn handle_socket(
                                     }))
                                     .await
                                     .unwrap();
-                                break;
                             }
+                        }
+                    }
+                    ClientMsg::StartLobbyChoice {} => {
+                        info!("Client {} wants to start the lobby early", ip);
+
+                        if let Err(err) = cloned_state_recv.start_lobby(ip).await {
+                            warn!("Error starting lobby : {}", err);
+                        }
+                    }
+                    ClientMsg::MatchEnded {} => {
+                        if let Some(room_id) = cloned_state_recv.room_id_for(ip).await {
+                            cloned_state_recv.start_end_game_countdown(room_id).await;
                         }
                     }
                     ClientMsg::RematchLobbyChoice {} => {
@@ -323,15 +526,23 @@ pub async fn handle_socket(
                         match cloned_state_recv.rematch_lobby(ip).await {
                             Ok(room_id) => {
                                 cloned_state_recv.end_game_action(room_id.clone()).await;
-                                cloned_state_recv
-                                    .send_lobby_update(room_id.clone())
-                                    .await
-                                    .unwrap();
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
                             }
                             Err(err) => {
                                 error!("Error rematching lobby : {}", err);
-                                break;
                             }
+                        }
+                    }
+                    ClientMsg::SkinChunk { chunk } => {
+                        if let Err(err) = cloned_state_recv.relay_skin_chunk(ip, chunk).await {
+                            warn!("Skin chunk from {} rejected : {}", ip, err);
                         }
                     }
                     ClientMsg::ArcherSelectChoice {} => {
@@ -340,14 +551,17 @@ pub async fn handle_socket(
                         match cloned_state_recv.archer_select_choice_lobby(ip).await {
                             Ok(room_id) => {
                                 cloned_state_recv.end_game_action(room_id.clone()).await;
-                                cloned_state_recv
-                                    .send_lobby_update(room_id.clone())
-                                    .await
-                                    .unwrap();
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
                             }
                             Err(err) => {
                                 error!("Error go selecting archer : {}", err);
-                                break;
                             }
                         }
                     }
@@ -394,23 +608,33 @@ pub async fn handle_socket(
                 break;
             }
 
+            client.keep_alive_sent();
+            client.maybe_not_alive();
+            drop(clients);
+
             send_task_in_keep_alive
                 .send(Message::Item(ServerMsg::KeepAlive {}))
                 .await
                 .unwrap();
-
-            client.maybe_not_alive();
         }
     });
+
+    let disconnect_reason;
 
     tokio::select! {
         _ = (&mut keep_alive_task) => {
             recv_task.abort();
+            disconnect_reason = "timeout";
         },
         _ = (&mut recv_task) => {
             keep_alive_task.abort();
+            disconnect_reason = "clean";
         }
     }
+
+    counter!(telemetry::DISCONNECTS_TOTAL, "reason" => disconnect_reason).increment(1);
+
+    state.exit_quick_play(ip).await;
 
     let mut clients = state.clone().clients.clone();
 
@@ -422,7 +646,9 @@ pub async fn handle_socket(
 
             match state.remove_from_lobby(ip).await {
                 Ok(room_id) => {
-                    state.send_lobby_update(room_id.clone()).await.unwrap();
+                    if let Err(err) = state.send_lobby_update(room_id.clone()).await {
+                        warn!("Could not send lobby update (lobby likely gone): {}", err);
+                    }
 
                     state.purge_lobby_async().await;
                 }

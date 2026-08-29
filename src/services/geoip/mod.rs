@@ -69,12 +69,12 @@ impl GeoipClient {
         Self { client }
     }
 
-    //TODO: Probably need to have an Option(Location) instead of a Location
     pub async fn get_location(&self, ip: IpAddr) -> Result<Location, String> {
-        let url = format!("https://geolite.info/geoip/v2.1/city/{}", ip.to_string());
+        let Some((username, password)) = ARGS.geoip_credentials() else {
+            return Ok(Location::default());
+        };
 
-        let username = ARGS.clone().geoip_client_id.clone();
-        let password = ARGS.clone().geoip_api_key.clone();
+        let url = format!("https://geolite.info/geoip/v2.1/city/{}", ip.to_string());
 
         let authorization = format!("{username}:{password}");
 
@@ -96,7 +96,7 @@ impl GeoipClient {
 
                 if body.contains("IP_ADDRESS_RESERVED") {
                     //Propably a local ip
-                    return Ok(Location::new(42.0, 42.0, "LOCAL".to_string()));
+                    return Ok(Location::default());
                 }
 
                 let err = format!("Error while getting location from ip {} : {}", ip, body);
@@ -119,6 +119,6 @@ impl GeoipClient {
 
         tracing::warn!("Failed to find location.Fallback to default...");
 
-        Ok(Location::new(42.0, 42.0, "LOCAL".to_string()))
+        Ok(Location::default())
     }
 }

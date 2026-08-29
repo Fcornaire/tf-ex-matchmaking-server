@@ -1,18 +1,31 @@
+pub mod broadcast;
 pub mod client;
+pub mod codes;
+pub mod end_game;
 pub mod lobby;
+pub mod quickplay;
 pub mod signaling_state;
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+pub use quickplay::{should_auto_start, QuickPlayOutcome, WIDER_SET_MOD_NAME};
+
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::{atomic::AtomicU64, Arc},
+    time::{Duration, Instant},
+};
 
 use axum_typed_websockets::Message;
+use metrics::{counter, gauge, histogram};
 use rand::Rng;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::info;
 
 use crate::{
     msg::ServerMsg,
-    services::geoip::GeoipClient,
-    state::lobby::{EndGameChoice, LobbyBuilder},
+    services::geoip::{GeoipClient, Location},
+    state::lobby::{LobbyBuilder, LobbyKind},
+    telemetry,
 };
 
 use self::{
@@ -26,12 +39,24 @@ pub type Clients = Arc<Mutex<HashMap<IpV4V6, Client>>>;
 pub type Lobbies = Arc<Mutex<Vec<Lobby>>>;
 
 #[derive(Debug, Clone)]
+pub struct QueuedPlayer {
+    pub addr: SocketAddr,
+    pub name: String,
+    pub location: Location,
+    pub is_wide: bool,
+    pub queued_at: Instant,
+}
+
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub clients: Clients,
     geoip_client: GeoipClient,
     pub signaling: Arc<Mutex<SignalingState>>,
     lobbies: Lobbies,
     connections: Arc<Mutex<HashMap<SocketAddr, Sender<Message<ServerMsg>>>>>,
+    end_game_countdowns: Arc<Mutex<HashMap<String, u64>>>,
+    end_game_generation: Arc<AtomicU64>,
+    queue: Arc<Mutex<Vec<QueuedPlayer>>>,
 }
 
 impl AppState {
@@ -42,11 +67,73 @@ impl AppState {
             signaling: Arc::new(Mutex::new(SignalingState::default())),
             lobbies: Arc::new(Mutex::new(vec![])),
             connections: Arc::new(Mutex::new(HashMap::new())),
+            end_game_countdowns: Arc::new(Mutex::new(HashMap::new())),
+            end_game_generation: Arc::new(AtomicU64::new(0)),
+            queue: Arc::new(Mutex::new(vec![])),
         }
     }
 
     pub fn lobbies(&self) -> Lobbies {
         self.lobbies.clone()
+    }
+
+    pub async fn publish_metrics_gauges(&self) {
+        let (queue_wide, queue_standard) = {
+            let queue = self.queue.lock().await;
+            let wide = queue.iter().filter(|q| q.is_wide).count();
+
+            (wide, queue.len() - wide)
+        };
+
+        let kinds = [
+            LobbyKind::Standard,
+            LobbyKind::QuickPlay,
+            LobbyKind::Private,
+        ];
+        let mut lobby_counts = [0usize; 3];
+        let mut game_counts = [0usize; 3];
+        let mut player_counts = [0usize; 3];
+        let mut spectators = 0usize;
+
+        {
+            let lobbies = self.lobbies.lock().await;
+
+            for lobby in lobbies.iter() {
+                let slot = kinds.iter().position(|k| *k == lobby.kind()).unwrap();
+
+                lobby_counts[slot] += 1;
+                player_counts[slot] += lobby.players().len();
+                spectators += lobby.spectators().len();
+
+                if lobby.in_game() {
+                    game_counts[slot] += 1;
+                }
+            }
+        }
+
+        let clients = self.clients.lock().await.len();
+
+        let (signaling_rooms, signaling_peers) = {
+            let signaling = self.signaling.lock().await;
+
+            (signaling.rooms.len(), signaling.clients.len())
+        };
+
+        gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "true").set(queue_wide as f64);
+        gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "false").set(queue_standard as f64);
+
+        for (slot, kind) in kinds.iter().enumerate() {
+            let label = telemetry::kind_label(*kind);
+
+            gauge!(telemetry::LOBBIES, "kind" => label).set(lobby_counts[slot] as f64);
+            gauge!(telemetry::GAMES_ACTIVE, "kind" => label).set(game_counts[slot] as f64);
+            gauge!(telemetry::PLAYERS_SEATED, "kind" => label).set(player_counts[slot] as f64);
+        }
+
+        gauge!(telemetry::SPECTATORS).set(spectators as f64);
+        gauge!(telemetry::CLIENTS_CONNECTED).set(clients as f64);
+        gauge!(telemetry::SIGNALING_ROOMS).set(signaling_rooms as f64);
+        gauge!(telemetry::SIGNALING_PEERS).set(signaling_peers as f64);
     }
 
     pub async fn update_alive_client(&self, addr: SocketAddr) -> Result<(), String> {
@@ -67,6 +154,28 @@ impl AppState {
         }
 
         Ok(())
+    }
+
+    pub async fn record_keep_alive_rtt(&self, addr: SocketAddr) -> Option<String> {
+        let ping = {
+            let mut clients = self.clients.lock().await;
+
+            let (_, client) = clients.iter_mut().find(|((ipv4, ipv6), _)| {
+                *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr
+            })?;
+
+            client.take_keep_alive_rtt()?
+        };
+
+        histogram!(telemetry::KEEPALIVE_RTT_SECONDS).record(ping as f64 / 1000.0);
+
+        let mut lobbies = self.lobbies.lock().await;
+        let addr = addr.to_string();
+        let lobby = lobbies.iter_mut().find(|l| l.has_member(&addr))?;
+
+        lobby.set_member_ping(&addr, ping);
+
+        Some(lobby.room_id())
     }
 
     pub async fn add_connexion(
@@ -103,6 +212,7 @@ impl AppState {
         let location = self.geoip_client.get_location(ipv4.ip()).await;
 
         if location.is_err() {
+            counter!(telemetry::GEOIP_FAILURES_TOTAL).increment(1);
             return Err("Could not get location".to_string());
         }
 
@@ -124,14 +234,20 @@ impl AppState {
     }
 
     pub async fn get_lobbies(&self, _addr: SocketAddr) -> Vec<Lobby> {
-        let lobbies: Vec<Lobby> = self
+        let mut lobbies: Vec<Lobby> = self
             .lobbies
             .lock()
             .await
             .iter()
-            .filter(|l| !l.is_full())
+            .filter(|l| match l.kind() {
+                LobbyKind::Standard => !l.is_full() || l.in_game(),
+                LobbyKind::QuickPlay => l.in_game(),
+                LobbyKind::Private => false,
+            })
             .cloned()
             .collect();
+
+        lobbies.sort_by_key(|l| l.in_game());
 
         lobbies
     }
@@ -152,7 +268,6 @@ impl AppState {
 
         client.name = lobby.name();
         client.room = Some(Room::new(lobby.room_id().clone()));
-        client.room_chat = Some(Room::new(lobby.room_chat_id().clone()));
 
         let lobb = lobby.clone();
         let host_res: Option<Player> = lobb.players().first().cloned();
@@ -165,20 +280,34 @@ impl AppState {
 
         host.update_addr(addr.to_string());
         host.update_room_peer_id(client.peer_id(lobby.room_id().clone()).unwrap());
-        host.update_room_chat_peer_id(client.peer_id(lobby.room_chat_id().clone()).unwrap());
+        host.set_seat(0);
 
         lobby.update_seed(rand::thread_rng().gen_range(0..100000));
+
+        let join_code = match lobby.kind() {
+            LobbyKind::Private => {
+                let taken: HashSet<String> = lobbies.iter().filter_map(|l| l.join_code()).collect();
+
+                Some(codes::generate_join_code(&taken))
+            }
+            _ => None,
+        };
 
         let final_lobby = LobbyBuilder::new()
             .name(lobby.name())
             .room_id(lobby.room_id())
-            .room_chat_id(lobby.room_chat_id())
+            .max_players(lobby.max_players())
             .game_data(lobby.game_data())
             .players(vec![host])
             .mods(lobby.mods())
+            .kind(lobby.kind())
+            .join_code(join_code)
             .build();
 
         lobbies.push(final_lobby.clone());
+
+        counter!(telemetry::LOBBIES_CREATED_TOTAL, "kind" => telemetry::kind_label(final_lobby.kind()))
+            .increment(1);
 
         Ok(final_lobby)
     }
@@ -189,9 +318,70 @@ impl AppState {
         addr: SocketAddr,
         name: String,
         is_player: bool,
-    ) -> Result<(String, String), String> {
+    ) -> Result<String, String> {
         let mut lobbies = self.lobbies.lock().await;
 
+        Self::guard_not_in_lobby(&lobbies, addr)?;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|l| l.room_id() == room_id)
+            .ok_or(format!("Lobby {} not found", room_id))?;
+
+        self.seat_member(lobby, addr, name, is_player).await
+    }
+
+    pub async fn join_private(
+        &self,
+        code: String,
+        addr: SocketAddr,
+        name: String,
+        is_player: bool,
+    ) -> Result<(Lobby, String), String> {
+        {
+            let mut clients = self.clients.lock().await;
+
+            let client = clients
+                .iter_mut()
+                .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
+                .ok_or("Client not found".to_string())?
+                .1;
+
+            if let Some(last) = client.last_private_join_attempt {
+                if last.elapsed()
+                    < Duration::from_secs(crate::constants::PRIVATE_JOIN_COOLDOWN_SECS)
+                {
+                    counter!(telemetry::PRIVATE_JOIN_FAILURES_TOTAL, "reason" => "rate_limited")
+                        .increment(1);
+                    return Err("Too many attempts, wait a moment".to_string());
+                }
+            }
+
+            client.last_private_join_attempt = Some(std::time::Instant::now());
+        }
+
+        let code = codes::normalize_code(&code);
+
+        let mut lobbies = self.lobbies.lock().await;
+
+        Self::guard_not_in_lobby(&lobbies, addr)?;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|l| l.join_code().as_deref() == Some(code.as_str()))
+            .ok_or_else(|| {
+                counter!(telemetry::PRIVATE_JOIN_FAILURES_TOTAL, "reason" => "invalid_code")
+                    .increment(1);
+
+                "Invalid or expired code".to_string()
+            })?;
+
+        let room_peer_id = self.seat_member(lobby, addr, name, is_player).await?;
+
+        Ok((lobby.clone(), room_peer_id))
+    }
+
+    fn guard_not_in_lobby(lobbies: &[Lobby], addr: SocketAddr) -> Result<(), String> {
         let exist = lobbies
             .iter()
             .find(|l| l.players().iter().any(|p| p.addr() == addr.to_string()));
@@ -200,13 +390,26 @@ impl AppState {
             return Err("Player already in a lobby".to_string());
         }
 
-        let lobby = lobbies
-            .iter_mut()
-            .find(|l| l.room_id() == room_id)
-            .ok_or(format!("Lobby {} not found", room_id))?;
+        Ok(())
+    }
 
-        if lobby.is_full() {
-            return Err(format!("Lobby {} is full", room_id));
+    pub(super) async fn seat_member(
+        &self,
+        lobby: &mut Lobby,
+        addr: SocketAddr,
+        name: String,
+        is_player: bool,
+    ) -> Result<String, String> {
+        let room_id = lobby.room_id();
+
+        if is_player {
+            if lobby.is_full() {
+                return Err(format!("Lobby {} is full", room_id));
+            }
+
+            if lobby.in_game() {
+                return Err(format!("Lobby {} already started", room_id));
+            }
         }
 
         let mut clients: tokio::sync::MutexGuard<'_, HashMap<IpV4V6, Client>> =
@@ -223,35 +426,29 @@ impl AppState {
         let client = client_res.unwrap().1;
 
         client.room = Some(Room::new(room_id.clone()));
-        client.room_chat = Some(Room::new(lobby.room_chat_id().clone()));
         client.name = name.clone();
 
         let room_peer_id = client
-            .peer_id(room_id.clone())
+            .peer_id(room_id)
             .ok_or("Couldn't retrieve Room peer id")?;
-        let room_chat_peer_id = client
-            .peer_id(lobby.room_chat_id().clone())
-            .ok_or("Couldn't retrieve Room chat peer id")?;
+
+        let member = Player::new(
+            client.name.clone(),
+            addr.to_string(),
+            room_peer_id.clone(),
+            false,
+        );
 
         if is_player {
-            lobby.add_player(Player::new(
-                client.name.clone(),
-                addr.to_string(),
-                room_peer_id.clone(),
-                room_chat_peer_id.clone(),
-                false,
-            ));
+            lobby.add_player(member);
         } else {
-            lobby.add_spectator(Player::new(
-                client.name.clone(),
-                addr.to_string(),
-                room_peer_id.clone(),
-                room_chat_peer_id.clone(),
-                false,
-            ));
+            lobby.add_spectator(member);
         }
 
-        Ok((room_peer_id, room_chat_peer_id))
+        counter!(telemetry::JOINS_TOTAL, "role" => if is_player { "player" } else { "spectator" })
+            .increment(1);
+
+        Ok(room_peer_id)
     }
 
     pub async fn remove_from_lobby(&self, addr: SocketAddr) -> Result<String, String> {
@@ -283,23 +480,41 @@ impl AppState {
         client.room = None;
 
         lobby.remove_player_or_spectator(addr.to_string());
+        lobby.promote_host_if_needed();
 
         Ok(lobby.room_id())
     }
 
-    pub async fn initialize_end_game_choice(&self, room_id: String) -> Result<(), String> {
+    pub async fn start_lobby(&self, addr: SocketAddr) -> Result<String, String> {
         let mut lobbies = self.lobbies.lock().await;
 
         let lobby = lobbies
             .iter_mut()
-            .find(|lobby| lobby.room_id() == room_id)
+            .find(|lobby| lobby.players().iter().any(|p| p.addr() == addr.to_string()))
             .ok_or("Lobby not found".to_string())?;
 
-        if lobby.is_full() && lobby.end_game_choice().is_none() {
+        let is_host = lobby
+            .players()
+            .iter()
+            .any(|p| p.addr() == addr.to_string() && p.is_host());
+
+        if !is_host {
+            return Err("Only the host can start the lobby".to_string());
+        }
+
+        if lobby.end_game_choice().is_none() {
             lobby.initialize_end_game_choice();
         }
 
-        Ok(())
+        lobby.set_in_game(true);
+
+        counter!(telemetry::MATCHES_STARTED_TOTAL, "kind" => telemetry::kind_label(lobby.kind()), "trigger" => "manual")
+            .increment(1);
+
+        self.send_msg_to_lobby(lobby.clone(), ServerMsg::StartLobby {})
+            .await;
+
+        Ok(lobby.room_id())
     }
 
     pub async fn rematch_lobby(&self, addr: SocketAddr) -> Result<String, String> {
@@ -328,64 +543,13 @@ impl AppState {
         Ok(lobby.room_id())
     }
 
-    pub async fn end_game_action(&self, room_id: String) {
-        let mut lobbies = self.lobbies.lock().await;
+    pub async fn room_id_for(&self, addr: SocketAddr) -> Option<String> {
+        let lobbies = self.lobbies.lock().await;
 
-        let lobby = lobbies
-            .iter_mut()
-            .find(|lobby| lobby.room_id() == room_id)
-            .unwrap();
-
-        if let Some(end_game_choice) = lobby.end_game_choice() {
-            if end_game_choice.len() < lobby.players().len() {
-                return;
-            }
-
-            let choices: Vec<EndGameChoice> = end_game_choice
-                .iter()
-                .map(|(_, choice)| choice.clone())
-                .collect();
-
-            if choices.iter().all(|c| *c == EndGameChoice::Rematch) {
-                info!(
-                    "End game action for room {} : {:?}",
-                    room_id,
-                    EndGameChoice::Rematch
-                );
-
-                self.send_msg_to_lobby(lobby.clone(), ServerMsg::RematchLobby {})
-                    .await;
-            } else {
-                info!(
-                    "End game action for room {} : {:?}",
-                    room_id,
-                    EndGameChoice::Archer
-                );
-
-                self.send_msg_to_lobby(lobby.clone(), ServerMsg::ArcherSelectLobby {})
-                    .await;
-            }
-
-            lobby.reset();
-        }
-    }
-
-    async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
-        let mut connexions = self.connections.lock().await;
-
-        for (addr, sender) in connexions.iter_mut() {
-            if lobby.players().iter().any(|p| {
-                p.addr() == addr.to_string()
-                    || lobby
-                        .spectators()
-                        .iter()
-                        .any(|s| s.addr() == addr.to_string())
-            }) {
-                info!("Sending {:?}  to {}", msg.clone(), addr.to_string());
-
-                sender.send(Message::Item(msg.clone())).await.unwrap();
-            }
-        }
+        lobbies
+            .iter()
+            .find(|lobby| lobby.players().iter().any(|p| p.addr() == addr.to_string()))
+            .map(|lobby| lobby.room_id())
     }
 
     pub async fn purge_lobby_async(&self) {
@@ -403,25 +567,6 @@ impl AppState {
         if count != lobbies.len() {
             info!("Purged {} lobbies with no host", count - lobbies.len());
         }
-    }
-
-    pub async fn send_lobby_update(&self, room_id: String) -> Result<(), String> {
-        let lobbies = self.lobbies.lock().await;
-
-        let lobby = lobbies
-            .iter()
-            .find(|l| l.room_id() == room_id)
-            .ok_or("Lobby not found".to_string())?;
-
-        self.send_msg_to_lobby(
-            lobby.clone(),
-            ServerMsg::LobbyUpdate {
-                lobby: lobby.clone(),
-            },
-        )
-        .await;
-
-        Ok(())
     }
 
     pub async fn update_player(&self, addr: SocketAddr, player: Player) -> Result<String, String> {
@@ -455,5 +600,170 @@ impl AppState {
         if rooms_to_remove.len() > 0 {
             info!("Removed {} empty signaling rooms", rooms_to_remove.len());
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::net::SocketAddr;
+
+    use crate::services::geoip::Location;
+
+    use super::{
+        client::Client,
+        lobby::{GameData, Lobby, LobbyBuilder, LobbyKind, Player},
+        AppState,
+    };
+
+    pub fn test_addr(n: u8) -> SocketAddr {
+        format!("127.0.0.{}:4000", n).parse().unwrap()
+    }
+
+    pub async fn state_with_clients(addrs: &[SocketAddr]) -> AppState {
+        let state = AppState::new();
+
+        for addr in addrs {
+            state
+                .clients
+                .lock()
+                .await
+                .insert((*addr, None), Client::new(Location::default()));
+        }
+
+        state
+    }
+
+    pub fn lobby_payload(kind: LobbyKind, room_id: &str) -> Lobby {
+        LobbyBuilder::new()
+            .name("tester".to_string())
+            .room_id(room_id.to_string())
+            .game_data(GameData {
+                map_id: -1,
+                mode: 3,
+                match_length: 2,
+                variants: vec![],
+                seed: 0,
+            })
+            .players(vec![Player::new(
+                "tester".to_string(),
+                "".to_string(),
+                "".to_string(),
+                true,
+            )])
+            .kind(kind)
+            .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+
+    #[tokio::test]
+    async fn private_lobby_gets_code_and_hides_from_browser() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Private, "room-1");
+        let created = state.add_lobby(&mut payload, host).await.unwrap();
+
+        assert_eq!(created.kind(), LobbyKind::Private);
+        assert_eq!(created.join_code().unwrap().len(), codes::CODE_LEN);
+        assert!(state.get_lobbies(host).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn join_private_normalizes_code_and_rejects_bad_one() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let state = state_with_clients(&[host, joiner]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Private, "room-1");
+        let created = state.add_lobby(&mut payload, host).await.unwrap();
+        let code = created.join_code().unwrap();
+
+        let err = state
+            .join_private("NOPE".to_string(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Invalid or expired code");
+
+        let throttled = state
+            .join_private(code.clone(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap_err();
+        assert_eq!(throttled, "Too many attempts, wait a moment");
+
+        state
+            .clients
+            .lock()
+            .await
+            .iter_mut()
+            .for_each(|(_, client)| client.last_private_join_attempt = None);
+
+        let sloppy = format!(" {} ", code.to_lowercase());
+        let (lobby, room_peer_id) = state
+            .join_private(sloppy, joiner, "guest".to_string(), true)
+            .await
+            .unwrap();
+
+        assert!(!room_peer_id.is_empty());
+        assert_eq!(lobby.players().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn in_game_lobby_rejects_players_but_accepts_spectators_and_stays_listed() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let watcher = test_addr(3);
+        let qp_host = test_addr(4);
+        let state = state_with_clients(&[host, joiner, watcher, qp_host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        state.lobbies.lock().await[0].set_in_game(true);
+
+        let err = state
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Lobby room-1 already started");
+
+        let room_peer_id = state
+            .join_lobby("room-1".to_string(), watcher, "watcher".to_string(), false)
+            .await
+            .unwrap();
+        assert!(!room_peer_id.is_empty());
+
+        let lobbies = state.get_lobbies(host).await;
+        assert_eq!(lobbies.len(), 1);
+        assert_eq!(lobbies[0].spectators().len(), 1);
+
+        let mut qp_payload = lobby_payload(LobbyKind::QuickPlay, "room-qp");
+        state.add_lobby(&mut qp_payload, qp_host).await.unwrap();
+        assert_eq!(state.get_lobbies(host).await.len(), 1);
+
+        state
+            .lobbies
+            .lock()
+            .await
+            .iter_mut()
+            .find(|l| l.room_id() == "room-qp")
+            .unwrap()
+            .set_in_game(true);
+        assert_eq!(state.get_lobbies(host).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn standard_lobby_stays_listed_without_code() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        let created = state.add_lobby(&mut payload, host).await.unwrap();
+
+        assert!(created.join_code().is_none());
+        assert_eq!(state.get_lobbies(host).await.len(), 1);
     }
 }
