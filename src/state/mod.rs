@@ -30,7 +30,7 @@ use crate::{
 
 use self::{
     client::{Client, Room},
-    lobby::{Lobby, Player},
+    lobby::{GameData, Lobby, Mod, Player},
     signaling_state::SignalingState,
 };
 
@@ -578,6 +578,37 @@ impl AppState {
             .ok_or("Lobby not found".to_string())?;
 
         lobby.update_player(player);
+
+        Ok(lobby.room_id())
+    }
+
+    pub async fn update_lobby_settings(
+        &self,
+        addr: SocketAddr,
+        max_players: usize,
+        game_data: GameData,
+        mods: Vec<Mod>,
+    ) -> Result<String, String> {
+        let mut lobbies = self.lobbies.lock().await;
+
+        let lobby = lobbies
+            .iter_mut()
+            .find(|l| l.players().iter().any(|p| p.addr() == addr.to_string()))
+            .ok_or("Lobby not found".to_string())?;
+
+        if !lobby
+            .players()
+            .iter()
+            .any(|p| p.addr() == addr.to_string() && p.is_host())
+        {
+            return Err("Only the host can update lobby settings".to_string());
+        }
+
+        if lobby.in_game() {
+            return Err("Cannot update lobby settings while in game".to_string());
+        }
+
+        lobby.update_settings(max_players, game_data, mods);
 
         Ok(lobby.room_id())
     }

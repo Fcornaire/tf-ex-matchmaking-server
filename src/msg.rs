@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::lobby::{Lobby, Player};
+use crate::state::lobby::{GameData, Lobby, Mod, Player};
 
 #[derive(Debug, Serialize, Clone)]
 pub enum ServerMsg {
@@ -86,6 +86,11 @@ pub enum ClientMsg {
     },
     UpdatePlayer {
         player: Player,
+    },
+    UpdateLobbySettings {
+        max_players: usize,
+        game_data: GameData,
+        mods: Vec<Mod>,
     },
     LeaveLobby {},
     RematchLobbyChoice {},

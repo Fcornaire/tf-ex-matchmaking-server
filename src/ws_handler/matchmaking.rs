@@ -473,6 +473,32 @@ pub async fn handle_socket(
                             }
                         }
                     }
+                    ClientMsg::UpdateLobbySettings {
+                        max_players,
+                        game_data,
+                        mods,
+                    } => {
+                        info!("Client {} want to update lobby settings", ip);
+
+                        match cloned_state_recv
+                            .update_lobby_settings(ip, max_players, game_data, mods)
+                            .await
+                        {
+                            Ok(room_id) => {
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                error!("Error updating lobby settings : {}", err);
+                            }
+                        }
+                    }
                     ClientMsg::LeaveLobby {} => {
                         info!("Client {} want to leave lobby", ip);
 

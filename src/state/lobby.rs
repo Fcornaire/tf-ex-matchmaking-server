@@ -190,9 +190,15 @@ impl Lobby {
             .map(|p| {
                 let ping = p.ping;
                 let seat = p.seat;
+                let custom_variants = if player.custom_variants.is_empty() {
+                    std::mem::take(&mut p.custom_variants)
+                } else {
+                    player.custom_variants.clone()
+                };
                 *p = player;
                 p.ping = ping;
                 p.seat = seat;
+                p.custom_variants = custom_variants;
             });
     }
 
@@ -233,6 +239,22 @@ impl Lobby {
 
     pub fn update_seed(&mut self, seed: i32) {
         self.game_data.seed = seed;
+    }
+
+    pub fn update_settings(&mut self, max_players: usize, game_data: GameData, mods: Vec<Mod>) {
+        let seed = self.game_data.seed;
+
+        self.max_players = max_players.clamp(self.players.len().max(2), MAX_PLAYERS);
+        self.game_data = game_data;
+        self.game_data.seed = seed;
+        self.mods = mods;
+
+        self.unready_all();
+    }
+
+    pub fn unready_all(&mut self) {
+        self.players.iter_mut().for_each(|p| p.ready = false);
+        self.membership_changed_at = Some(Instant::now());
     }
 
     pub fn initialize_end_game_choice(&mut self) {
@@ -324,6 +346,8 @@ pub struct Player {
     custom_archer_id: String,
     #[serde(default)]
     archer_mods: Vec<String>,
+    #[serde(default)]
+    custom_variants: Vec<String>,
 }
 
 fn neutral_team() -> i32 {
@@ -345,6 +369,7 @@ impl Player {
             team: neutral_team(),
             custom_archer_id: String::new(),
             archer_mods: Vec::new(),
+            custom_variants: Vec::new(),
         }
     }
 
