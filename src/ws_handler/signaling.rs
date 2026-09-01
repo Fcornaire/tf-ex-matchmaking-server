@@ -157,7 +157,9 @@ async fn handle_ws(
                 }
             };
 
-            info!("{:?} <- {:?}", peer_uuid, request);
+            if !matches!(request, PeerRequest::KeepAlive) {
+                info!("{:?} <- {:?}", peer_uuid, request);
+            }
 
             match request {
                 PeerRequest::Signal { receiver, data } => {

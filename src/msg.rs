@@ -75,6 +75,10 @@ pub struct PlayerPing {
 #[derive(Debug, Deserialize)]
 pub enum ClientMsg {
     KeepAlive {},
+    Identify {
+        player_id: String,
+        name: String,
+    },
     GetLobbies {},
     CreateLobby {
         lobby: Lobby,
@@ -96,7 +100,14 @@ pub enum ClientMsg {
     RematchLobbyChoice {},
     StartLobbyChoice {},
     ArcherSelectChoice {},
-    MatchEnded {},
+    MatchEnded {
+        #[serde(default)]
+        winner_seat: Option<i32>,
+        #[serde(default)]
+        frame: Option<i32>,
+        #[serde(default)]
+        checksum: Option<String>,
+    },
     JoinPrivate {
         code: String,
         name: String,

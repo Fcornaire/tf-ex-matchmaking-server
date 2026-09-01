@@ -154,6 +154,10 @@ impl Lobby {
         self.in_game = in_game;
     }
 
+    pub fn match_duration_secs(&self) -> Option<f64> {
+        self.in_game_since.map(|since| since.elapsed().as_secs_f64())
+    }
+
     pub fn take_match_duration_secs(&mut self) -> Option<f64> {
         self.in_game_since
             .take()

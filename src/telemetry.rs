@@ -1,8 +1,9 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{extract::State, routing::get, Router};
 use metrics::{describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use metrics_util::MetricKindMask;
 use tracing::{error, info};
 
 use crate::state::{lobby::LobbyKind, AppState};
@@ -27,6 +28,9 @@ pub const END_GAME_OUTCOMES_TOTAL: &str = "tfex_end_game_outcomes_total";
 pub const PRIVATE_JOIN_FAILURES_TOTAL: &str = "tfex_private_join_failures_total";
 pub const GEOIP_FAILURES_TOTAL: &str = "tfex_geoip_failures_total";
 pub const SKIN_CHUNKS_TOTAL: &str = "tfex_skin_chunks_total";
+pub const RATING_REPORTS_TOTAL: &str = "tfex_rating_reports_total";
+pub const RATING_RATED_TOTAL: &str = "tfex_rating_rated_matches_total";
+pub const PLAYER_RATING: &str = "tfex_player_rating";
 
 pub const MATCH_DURATION_SECONDS: &str = "tfex_match_duration_seconds";
 pub const QUICKPLAY_WAIT_SECONDS: &str = "tfex_quickplay_wait_seconds";
@@ -43,6 +47,7 @@ pub fn kind_label(kind: LobbyKind) -> &'static str {
 /// Must run before anything can emit a metric
 pub fn install() -> PrometheusHandle {
     let handle = PrometheusBuilder::new()
+        .idle_timeout(MetricKindMask::GAUGE, Some(Duration::from_secs(300)))
         .set_buckets_for_metric(
             Matcher::Full(KEEPALIVE_RTT_SECONDS.to_string()),
             &[0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0],
@@ -81,6 +86,10 @@ fn describe() {
     );
     describe_gauge!(SIGNALING_ROOMS, "Open WebRTC signaling rooms");
     describe_gauge!(SIGNALING_PEERS, "Peers connected to the signaling endpoint");
+    describe_gauge!(
+        PLAYER_RATING,
+        "Hidden rating of the current top players, by player_id and name"
+    );
 
     describe_counter!(
         CONNECTIONS_TOTAL,

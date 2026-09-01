@@ -135,6 +135,8 @@ impl AppState {
         running.remove(&room_id);
         drop(running);
 
+        self.clear_match_reports(&room_id).await;
+
         if !kicked.is_empty() {
             info!(
                 "End game for room {} : dropping {} player(s) because no choice",

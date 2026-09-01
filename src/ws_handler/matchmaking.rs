@@ -176,6 +176,12 @@ pub async fn handle_socket(
                             }
                         }
                     }
+                    ClientMsg::Identify { player_id, name } => {
+                        if let Err(err) = cloned_state_recv.identify_client(ip, player_id, name).await
+                        {
+                            warn!("Client {} identify rejected : {}", ip, err);
+                        }
+                    }
                     ClientMsg::GetLobbies {} => {
                         info!("Client {} requested lobbies", ip);
 
@@ -541,7 +547,17 @@ pub async fn handle_socket(
                             warn!("Error starting lobby : {}", err);
                         }
                     }
-                    ClientMsg::MatchEnded {} => {
+                    ClientMsg::MatchEnded {
+                        winner_seat,
+                        frame,
+                        checksum,
+                    } => {
+                        if let Some(seat) = winner_seat {
+                            cloned_state_recv
+                                .handle_match_report(ip, seat, frame, checksum)
+                                .await;
+                        }
+
                         if let Some(room_id) = cloned_state_recv.room_id_for(ip).await {
                             cloned_state_recv.start_end_game_countdown(room_id).await;
                         }

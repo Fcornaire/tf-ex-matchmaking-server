@@ -58,8 +58,30 @@ async fn main() {
 
     let metrics_handle = telemetry::install();
 
+    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "tfex.db".to_string());
+    let storage = match services::storage::Storage::open(&db_path) {
+        Ok(storage) => {
+            let known_players = storage.player_count().await.unwrap_or(0);
+            tracing::info!(
+                "Rating storage ready at {} ({} known players)",
+                db_path,
+                known_players
+            );
+            Some(Arc::new(storage))
+        }
+        Err(err) => {
+            tracing::error!(
+                "Rating storage DISABLED, failed to open {}: {}",
+                db_path,
+                err
+            );
+            None
+        }
+    };
+
+
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new_with_storage(storage));
 
     let metrics_port = std::env::var("METRICS_PORT")
         .ok()

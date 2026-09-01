@@ -4,6 +4,7 @@ pub mod codes;
 pub mod end_game;
 pub mod lobby;
 pub mod quickplay;
+pub mod rating;
 pub mod signaling_state;
 
 pub use quickplay::{should_auto_start, QuickPlayOutcome, WIDER_SET_MOD_NAME};
@@ -23,7 +24,10 @@ use tracing::info;
 
 use crate::{
     msg::ServerMsg,
-    services::geoip::{GeoipClient, Location},
+    services::{
+        geoip::{GeoipClient, Location},
+        storage::{RatingConfig, Storage},
+    },
     state::lobby::{LobbyBuilder, LobbyKind},
     telemetry,
 };
@@ -57,10 +61,17 @@ pub struct AppState {
     end_game_countdowns: Arc<Mutex<HashMap<String, u64>>>,
     end_game_generation: Arc<AtomicU64>,
     queue: Arc<Mutex<Vec<QueuedPlayer>>>,
+    storage: Option<Arc<Storage>>,
+    match_reports: Arc<Mutex<HashMap<String, rating::PendingReports>>>,
+    rating_config: RatingConfig,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        Self::new_with_storage(None)
+    }
+
+    pub fn new_with_storage(storage: Option<Arc<Storage>>) -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
             geoip_client: GeoipClient::new(),
@@ -70,7 +81,15 @@ impl AppState {
             end_game_countdowns: Arc::new(Mutex::new(HashMap::new())),
             end_game_generation: Arc::new(AtomicU64::new(0)),
             queue: Arc::new(Mutex::new(vec![])),
+            storage,
+            match_reports: Arc::new(Mutex::new(HashMap::new())),
+            rating_config: RatingConfig::from_env(),
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn storage(&self) -> Option<Arc<Storage>> {
+        self.storage.clone()
     }
 
     pub fn lobbies(&self) -> Lobbies {
@@ -134,6 +153,58 @@ impl AppState {
         gauge!(telemetry::CLIENTS_CONNECTED).set(clients as f64);
         gauge!(telemetry::SIGNALING_ROOMS).set(signaling_rooms as f64);
         gauge!(telemetry::SIGNALING_PEERS).set(signaling_peers as f64);
+
+        if let Some(storage) = &self.storage {
+            match storage.top_players(20).await {
+                Ok(top) => {
+                    for (player_id, name, rating) in top {
+                        gauge!(telemetry::PLAYER_RATING, "player_id" => player_id, "name" => name)
+                            .set(rating);
+                    }
+                }
+                Err(err) => {
+                    info!("Could not publish top players : {}", err);
+                }
+            }
+        }
+    }
+
+    pub async fn identify_client(
+        &self,
+        addr: SocketAddr,
+        player_id: String,
+        name: String,
+    ) -> Result<(), String> {
+        let valid_prefix = player_id.starts_with("steam:") || player_id.starts_with("local:");
+
+        if !valid_prefix || player_id.len() > 64 {
+            return Err(format!("Invalid player id '{}'", player_id));
+        }
+
+        {
+            let mut clients = self.clients.lock().await;
+
+            let client = clients
+                .iter_mut()
+                .find(|((ipv4, ipv6), _)| {
+                    *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr
+                })
+                .map(|(_, client)| client)
+                .ok_or("Client not found".to_string())?;
+
+            client.player_id = Some(player_id.clone());
+        }
+
+        if let Some(storage) = &self.storage {
+            let rating = storage.get_or_create_player(player_id, name).await?;
+
+            info!(
+                "Client {} identified as {} (rating {:.0}, {} matches)",
+                addr, rating.id, rating.rating, rating.matches_played
+            );
+        }
+
+        Ok(())
     }
 
     pub async fn update_alive_client(&self, addr: SocketAddr) -> Result<(), String> {
