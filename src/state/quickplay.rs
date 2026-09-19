@@ -190,6 +190,7 @@ impl AppState {
                     match_length: 2,
                     variants: vec![],
                     seed: rand::thread_rng().gen_range(0..100000),
+                    best_of: 0,
                 })
                 .players(vec![host])
                 .kind(LobbyKind::QuickPlay)

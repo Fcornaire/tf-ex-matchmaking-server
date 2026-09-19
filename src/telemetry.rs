@@ -25,6 +25,7 @@ pub const QUICKPLAY_ENTER_TOTAL: &str = "tfex_quickplay_enter_total";
 pub const MATCHES_STARTED_TOTAL: &str = "tfex_matches_started_total";
 pub const MATCHES_ENDED_TOTAL: &str = "tfex_matches_ended_total";
 pub const END_GAME_OUTCOMES_TOTAL: &str = "tfex_end_game_outcomes_total";
+pub const SERIES_OUTCOMES_TOTAL: &str = "tfex_series_outcomes_total";
 pub const PRIVATE_JOIN_FAILURES_TOTAL: &str = "tfex_private_join_failures_total";
 pub const GEOIP_FAILURES_TOTAL: &str = "tfex_geoip_failures_total";
 pub const SKIN_CHUNKS_TOTAL: &str = "tfex_skin_chunks_total";
@@ -110,6 +111,10 @@ fn describe() {
     describe_counter!(
         END_GAME_OUTCOMES_TOTAL,
         "End-of-match window resolutions, by outcome"
+    );
+    describe_counter!(
+        SERIES_OUTCOMES_TOTAL,
+        "Best-of series lifecycle events, by outcome"
     );
     describe_counter!(
         PRIVATE_JOIN_FAILURES_TOTAL,

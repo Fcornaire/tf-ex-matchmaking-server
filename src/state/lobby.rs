@@ -5,13 +5,15 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::constants::MAX_PLAYERS;
+use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
 use crate::services::geoip::Location;
+use crate::state::series::Series;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EndGameChoice {
     Rematch,
     Archer,
+    Continue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,6 +70,8 @@ pub struct Lobby {
     kind: LobbyKind,
     #[serde(default)]
     join_code: Option<String>,
+    #[serde(default)]
+    series: Option<Series>,
     #[serde(skip)]
     origin: Option<Location>,
     #[serde(skip)]
@@ -119,6 +123,87 @@ impl Lobby {
         self.origin.clone()
     }
 
+    pub fn series(&self) -> Option<&Series> {
+        self.series.as_ref()
+    }
+
+    pub fn series_mut(&mut self) -> Option<&mut Series> {
+        self.series.as_mut()
+    }
+
+    pub fn is_series_lobby(&self) -> bool {
+        self.game_data.best_of > 0
+    }
+
+    pub fn series_in_progress(&self) -> bool {
+        self.series.as_ref().is_some_and(|s| s.is_in_progress())
+    }
+
+    pub fn all_players_ready(&self) -> bool {
+        !self.players.is_empty() && self.players.iter().all(|p| p.ready)
+    }
+
+    pub fn is_team_mode(&self) -> bool {
+        self.game_data.mode == TEAM_DEATHMATCH_MODE
+    }
+
+    pub fn start_series(&mut self) -> Result<(), String> {
+        let sides = self.series_sides()?;
+
+        self.series = Some(Series::new(self.game_data.best_of as u32, sides));
+
+        Ok(())
+    }
+
+    fn series_sides(&self) -> Result<Vec<Vec<usize>>, String> {
+        let mut seats: Vec<usize> = self.players.iter().map(|p| p.seat).collect();
+        seats.sort_unstable();
+
+        if seats.len() == 2 {
+            return Ok(seats.into_iter().map(|seat| vec![seat]).collect());
+        }
+
+        if !self.is_team_mode() || seats.len() != 2 * SERIES_TEAM_SIZE {
+            return Err("A series needs a 1v1 or a 2v2 team deathmatch".to_string());
+        }
+
+        let sides: Vec<Vec<usize>> = (0..2)
+            .map(|team| {
+                let mut side: Vec<usize> = self
+                    .players
+                    .iter()
+                    .filter(|p| p.team == team)
+                    .map(|p| p.seat)
+                    .collect();
+                side.sort_unstable();
+                side
+            })
+            .collect();
+
+        if sides.iter().any(|side| side.len() != SERIES_TEAM_SIZE) {
+            return Err("A 2v2 series needs two full teams".to_string());
+        }
+
+        Ok(sides)
+    }
+
+    pub fn begin_series_game(&mut self) -> Option<i32> {
+        let map_id = self.series.as_mut()?.begin_game()?;
+        self.game_data.map_id = map_id;
+
+        Some(map_id)
+    }
+
+    pub fn abort_series(&mut self, reason: &str) -> bool {
+        match self.series.as_mut() {
+            Some(series) if series.is_in_progress() => {
+                series.abort(reason);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn secs_since_membership_change(&self) -> u64 {
         self.membership_changed_at
             .map(|at| at.elapsed().as_secs())
@@ -155,7 +240,8 @@ impl Lobby {
     }
 
     pub fn match_duration_secs(&self) -> Option<f64> {
-        self.in_game_since.map(|since| since.elapsed().as_secs_f64())
+        self.in_game_since
+            .map(|since| since.elapsed().as_secs_f64())
     }
 
     pub fn take_match_duration_secs(&mut self) -> Option<f64> {
@@ -236,9 +322,14 @@ impl Lobby {
     }
 
     pub fn remove_player_or_spectator(&mut self, addr: String) {
+        let seated_before = self.players.len();
         self.players.retain(|p| p.addr() != addr);
         self.spectators.retain(|p| p.addr() != addr);
         self.membership_changed_at = Some(Instant::now());
+
+        if self.players.len() != seated_before {
+            self.abort_series("PLAYER LEFT");
+        }
     }
 
     pub fn update_seed(&mut self, seed: i32) {
@@ -252,6 +343,7 @@ impl Lobby {
         self.game_data = game_data;
         self.game_data.seed = seed;
         self.mods = mods;
+        self.series = None;
 
         self.unready_all();
     }
@@ -271,6 +363,10 @@ impl Lobby {
 
     pub fn archer_select_choice(&mut self, addr: String) {
         self.record_choice(addr, EndGameChoice::Archer);
+    }
+
+    pub fn continue_choice(&mut self, addr: String) {
+        self.record_choice(addr, EndGameChoice::Continue);
     }
 
     fn record_choice(&mut self, addr: String, choice: EndGameChoice) {
@@ -295,18 +391,21 @@ impl Lobby {
         self.update_seed(rand::thread_rng().gen_range(0..100000));
     }
 
-    #[cfg(test)]
-    pub fn set_all_ready(&mut self) {
+    pub fn ready_all(&mut self) -> usize {
+        let forced = self.players.iter().filter(|p| !p.ready).count();
         self.players.iter_mut().for_each(|p| p.ready = true);
+        forced
     }
 
-    #[cfg(test)]
+    pub fn set_all_ready(&mut self) {
+        self.ready_all();
+    }
+
     pub fn backdate_membership(&mut self, secs: u64) {
         self.membership_changed_at =
             Instant::now().checked_sub(std::time::Duration::from_secs(secs));
     }
 
-    #[cfg(test)]
     pub fn backdate_ready(&mut self, secs: u64) {
         self.all_ready_since = Instant::now().checked_sub(std::time::Duration::from_secs(secs));
     }
@@ -328,6 +427,9 @@ pub struct GameData {
     pub match_length: i32,
     pub variants: Vec<String>,
     pub seed: i32,
+    /// 0 for single match; 1, 3, 5 for the series length
+    #[serde(default)]
+    pub best_of: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +485,14 @@ impl Player {
 
     pub fn ready(&self) -> bool {
         self.ready
+    }
+
+    pub fn team(&self) -> i32 {
+        self.team
+    }
+
+    pub fn set_team(&mut self, team: i32) {
+        self.team = team;
     }
 
     pub fn set_seat(&mut self, seat: usize) {
@@ -498,6 +608,7 @@ impl LobbyBuilder {
             mods: self.mods.unwrap_or_default(),
             kind: self.kind.unwrap_or_default(),
             join_code: self.join_code,
+            series: None,
             origin: self.origin,
             membership_changed_at: None,
             all_ready_since: None,

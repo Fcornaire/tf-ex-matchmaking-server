@@ -17,6 +17,7 @@ pub enum ServerMsg {
         success: bool,
         message: String,
         room_peer_id: String,
+        lobby: Option<Lobby>,
     },
     LobbyUpdate {
         lobby: Lobby,
@@ -32,6 +33,7 @@ pub enum ServerMsg {
     RematchLobby {},
     StartLobby {},
     ArcherSelectLobby {},
+    SeriesLobby {},
     PrivateJoinResult {
         success: bool,
         message: String,
@@ -100,6 +102,10 @@ pub enum ClientMsg {
     RematchLobbyChoice {},
     StartLobbyChoice {},
     ArcherSelectChoice {},
+    SeriesContinueChoice {},
+    SeriesPickMap {
+        map_id: i32,
+    },
     MatchEnded {
         #[serde(default)]
         winner_seat: Option<i32>,
@@ -107,6 +113,8 @@ pub enum ClientMsg {
         frame: Option<i32>,
         #[serde(default)]
         checksum: Option<String>,
+        #[serde(default)]
+        scores: Option<Vec<i32>>,
     },
     JoinPrivate {
         code: String,

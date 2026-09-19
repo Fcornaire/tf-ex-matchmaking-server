@@ -177,7 +177,8 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::Identify { player_id, name } => {
-                        if let Err(err) = cloned_state_recv.identify_client(ip, player_id, name).await
+                        if let Err(err) =
+                            cloned_state_recv.identify_client(ip, player_id, name).await
                         {
                             warn!("Client {} identify rejected : {}", ip, err);
                         }
@@ -237,12 +238,13 @@ pub async fn handle_socket(
                             .join_lobby(room_id.clone(), ip, name, is_player)
                             .await
                         {
-                            Ok(room_peer_id) => {
+                            Ok((lobby, room_peer_id)) => {
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::JoinLobbyResponse {
                                         success: true,
                                         message: "".to_string(),
                                         room_peer_id: room_peer_id.clone(),
+                                        lobby: Some(lobby),
                                     }))
                                     .await
                                     .unwrap();
@@ -270,6 +272,7 @@ pub async fn handle_socket(
                                         success: false,
                                         message: err,
                                         room_peer_id: "".to_string(),
+                                        lobby: None,
                                     }))
                                     .await
                                     .unwrap();
@@ -473,6 +476,8 @@ pub async fn handle_socket(
                                         err
                                     );
                                 }
+
+                                cloned_state_recv.try_start_series_game(room_id).await;
                             }
                             Err(err) => {
                                 error!("Error updating player : {}", err);
@@ -551,15 +556,57 @@ pub async fn handle_socket(
                         winner_seat,
                         frame,
                         checksum,
+                        scores,
                     } => {
                         if let Some(seat) = winner_seat {
                             cloned_state_recv
-                                .handle_match_report(ip, seat, frame, checksum)
+                                .handle_match_report(ip, seat, frame, checksum, scores)
                                 .await;
                         }
 
                         if let Some(room_id) = cloned_state_recv.room_id_for(ip).await {
                             cloned_state_recv.start_end_game_countdown(room_id).await;
+                        }
+                    }
+                    ClientMsg::SeriesContinueChoice {} => {
+                        info!("Client {} is ready for the next series game", ip);
+
+                        match cloned_state_recv.series_continue_choice(ip).await {
+                            Ok(room_id) => {
+                                cloned_state_recv.end_game_action(room_id.clone()).await;
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                error!("Error recording series continue : {}", err);
+                            }
+                        }
+                    }
+                    ClientMsg::SeriesPickMap { map_id } => {
+                        info!("Client {} picks tower {} for the series", ip, map_id);
+
+                        match cloned_state_recv.pick_series_map(ip, map_id).await {
+                            Ok(room_id) => {
+                                if let Err(err) =
+                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+
+                                cloned_state_recv.try_start_series_game(room_id).await;
+                            }
+                            Err(err) => {
+                                warn!("Series pick from {} rejected : {}", ip, err);
+                            }
                         }
                     }
                     ClientMsg::RematchLobbyChoice {} => {

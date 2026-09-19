@@ -83,7 +83,7 @@ impl AppState {
             return;
         }
 
-        let (kicked, remaining, rematch) = {
+        let (kicked, remaining, rematch, series_lobby) = {
             let mut lobbies = self.lobbies.lock().await;
 
             let Some(lobby) = lobbies.iter_mut().find(|lobby| lobby.room_id() == room_id) else {
@@ -124,12 +124,23 @@ impl AppState {
                     .iter()
                     .all(|vote| vote.choice == EndGameChoice::Rematch);
 
+            let series_lobby = lobby.series().is_some();
+
             if !lobby.players().is_empty() {
                 lobby.reset();
-                lobby.set_in_game(rematch);
+
+                if series_lobby {
+                    if lobby.series().is_some_and(|s| s.awaiting_result) {
+                        lobby.abort_series("MISSING RESULT");
+                    }
+
+                    lobby.set_in_game(false);
+                } else {
+                    lobby.set_in_game(rematch);
+                }
             }
 
-            (kicked, lobby.clone(), rematch)
+            (kicked, lobby.clone(), rematch, series_lobby)
         };
 
         running.remove(&room_id);
@@ -160,6 +171,11 @@ impl AppState {
         }
 
         let _ = self.send_lobby_update(room_id.clone()).await;
+
+        if series_lobby {
+            self.continue_series(remaining).await;
+            return;
+        }
 
         if rematch {
             info!(

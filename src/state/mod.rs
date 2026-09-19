@@ -5,6 +5,7 @@ pub mod end_game;
 pub mod lobby;
 pub mod quickplay;
 pub mod rating;
+pub mod series;
 pub mod signaling_state;
 
 pub use quickplay::{should_auto_start, QuickPlayOutcome, WIDER_SET_MOD_NAME};
@@ -59,6 +60,7 @@ pub struct AppState {
     lobbies: Lobbies,
     connections: Arc<Mutex<HashMap<SocketAddr, Sender<Message<ServerMsg>>>>>,
     end_game_countdowns: Arc<Mutex<HashMap<String, u64>>>,
+    series_countdowns: Arc<Mutex<HashMap<String, u64>>>,
     end_game_generation: Arc<AtomicU64>,
     queue: Arc<Mutex<Vec<QueuedPlayer>>>,
     storage: Option<Arc<Storage>>,
@@ -79,6 +81,7 @@ impl AppState {
             lobbies: Arc::new(Mutex::new(vec![])),
             connections: Arc::new(Mutex::new(HashMap::new())),
             end_game_countdowns: Arc::new(Mutex::new(HashMap::new())),
+            series_countdowns: Arc::new(Mutex::new(HashMap::new())),
             end_game_generation: Arc::new(AtomicU64::new(0)),
             queue: Arc::new(Mutex::new(vec![])),
             storage,
@@ -186,9 +189,7 @@ impl AppState {
 
             let client = clients
                 .iter_mut()
-                .find(|((ipv4, ipv6), _)| {
-                    *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr
-                })
+                .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
                 .map(|(_, client)| client)
                 .ok_or("Client not found".to_string())?;
 
@@ -311,7 +312,7 @@ impl AppState {
             .await
             .iter()
             .filter(|l| match l.kind() {
-                LobbyKind::Standard => !l.is_full() || l.in_game(),
+                LobbyKind::Standard => !l.is_full() || l.in_game() || l.series_in_progress(),
                 LobbyKind::QuickPlay => l.in_game(),
                 LobbyKind::Private => false,
             })
@@ -389,7 +390,7 @@ impl AppState {
         addr: SocketAddr,
         name: String,
         is_player: bool,
-    ) -> Result<String, String> {
+    ) -> Result<(Lobby, String), String> {
         let mut lobbies = self.lobbies.lock().await;
 
         Self::guard_not_in_lobby(&lobbies, addr)?;
@@ -399,7 +400,9 @@ impl AppState {
             .find(|l| l.room_id() == room_id)
             .ok_or(format!("Lobby {} not found", room_id))?;
 
-        self.seat_member(lobby, addr, name, is_player).await
+        let room_peer_id = self.seat_member(lobby, addr, name, is_player).await?;
+
+        Ok((lobby.clone(), room_peer_id))
     }
 
     pub async fn join_private(
@@ -481,6 +484,10 @@ impl AppState {
             if lobby.in_game() {
                 return Err(format!("Lobby {} already started", room_id));
             }
+
+            if lobby.series_in_progress() {
+                return Err(format!("Lobby {} has a series running", room_id));
+            }
         }
 
         let mut clients: tokio::sync::MutexGuard<'_, HashMap<IpV4V6, Client>> =
@@ -550,8 +557,14 @@ impl AppState {
 
         client.room = None;
 
+        let series_running = lobby.series_in_progress();
         lobby.remove_player_or_spectator(addr.to_string());
         lobby.promote_host_if_needed();
+
+        if series_running && !lobby.series_in_progress() {
+            info!("Series in room {} aborted, a player left", lobby.room_id());
+            counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "aborted").increment(1);
+        }
 
         Ok(lobby.room_id())
     }
@@ -573,6 +586,20 @@ impl AppState {
             return Err("Only the host can start the lobby".to_string());
         }
 
+        let series_started = if lobby.is_series_lobby() {
+            if lobby.in_game() || lobby.series_in_progress() {
+                return Err("Series already running".to_string());
+            }
+
+            lobby.start_series()?;
+            lobby
+                .begin_series_game()
+                .ok_or("No tower available for the series".to_string())?;
+            true
+        } else {
+            false
+        };
+
         if lobby.end_game_choice().is_none() {
             lobby.initialize_end_game_choice();
         }
@@ -581,6 +608,21 @@ impl AppState {
 
         counter!(telemetry::MATCHES_STARTED_TOTAL, "kind" => telemetry::kind_label(lobby.kind()), "trigger" => "manual")
             .increment(1);
+
+        let lobby = lobby.clone();
+        drop(lobbies);
+
+        if series_started {
+            counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "started").increment(1);
+
+            self.send_msg_to_lobby(
+                lobby.clone(),
+                ServerMsg::LobbyUpdate {
+                    lobby: lobby.clone(),
+                },
+            )
+            .await;
+        }
 
         self.send_msg_to_lobby(lobby.clone(), ServerMsg::StartLobby {})
             .await;
@@ -679,6 +721,10 @@ impl AppState {
             return Err("Cannot update lobby settings while in game".to_string());
         }
 
+        if lobby.series_in_progress() {
+            return Err("Cannot update lobby settings during a series".to_string());
+        }
+
         lobby.update_settings(max_players, game_data, mods);
 
         Ok(lobby.room_id())
@@ -745,6 +791,7 @@ pub(crate) mod test_support {
                 match_length: 2,
                 variants: vec![],
                 seed: 0,
+                best_of: 0,
             })
             .players(vec![Player::new(
                 "tester".to_string(),
@@ -832,7 +879,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, "Lobby room-1 already started");
 
-        let room_peer_id = state
+        let (_, room_peer_id) = state
             .join_lobby("room-1".to_string(), watcher, "watcher".to_string(), false)
             .await
             .unwrap();
