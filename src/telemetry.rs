@@ -1,14 +1,23 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::SocketAddr,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 
 use axum::{extract::State, routing::get, Router};
-use metrics::{describe_counter, describe_gauge, describe_histogram};
+use metrics::{describe_counter, describe_gauge, describe_histogram, gauge};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use metrics_util::MetricKindMask;
 use tracing::{error, info};
 
-use crate::state::{lobby::LobbyKind, AppState};
+use crate::{
+    services::storage::unix_now,
+    state::{lobby::LobbyKind, AppState},
+};
 
 pub const CLIENTS_CONNECTED: &str = "tfex_clients_connected";
+pub const CLIENTS_BY_COUNTRY: &str = "tfex_clients_by_country";
 pub const LOBBIES: &str = "tfex_lobbies";
 pub const GAMES_ACTIVE: &str = "tfex_games_active";
 pub const PLAYERS_SEATED: &str = "tfex_players_seated";
@@ -28,20 +37,46 @@ pub const END_GAME_OUTCOMES_TOTAL: &str = "tfex_end_game_outcomes_total";
 pub const SERIES_OUTCOMES_TOTAL: &str = "tfex_series_outcomes_total";
 pub const PRIVATE_JOIN_FAILURES_TOTAL: &str = "tfex_private_join_failures_total";
 pub const GEOIP_FAILURES_TOTAL: &str = "tfex_geoip_failures_total";
-pub const SKIN_CHUNKS_TOTAL: &str = "tfex_skin_chunks_total";
 pub const RATING_REPORTS_TOTAL: &str = "tfex_rating_reports_total";
 pub const RATING_RATED_TOTAL: &str = "tfex_rating_rated_matches_total";
+pub const RATING_UNRATED_TOTAL: &str = "tfex_rating_unrated_matches_total";
+pub const MATCH_REPORTS_DROPPED_TOTAL: &str = "tfex_match_reports_dropped_total";
 pub const PLAYER_RATING: &str = "tfex_player_rating";
+pub const MATCH_REPORTS_PENDING: &str = "tfex_match_reports_pending";
+pub const PLAYERS_TOTAL: &str = "tfex_players_total";
+pub const PLAYERS_ACTIVE: &str = "tfex_players_active";
+pub const RATED_MATCHES_RECENT: &str = "tfex_rated_matches_recent";
+pub const START_TIME_SECONDS: &str = "tfex_start_time_seconds";
 
 pub const MATCH_DURATION_SECONDS: &str = "tfex_match_duration_seconds";
 pub const QUICKPLAY_WAIT_SECONDS: &str = "tfex_quickplay_wait_seconds";
 pub const KEEPALIVE_RTT_SECONDS: &str = "tfex_keepalive_rtt_seconds";
+
+static STARTED_AT: OnceLock<i64> = OnceLock::new();
+static PUBLISHED_COUNTRIES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 pub fn kind_label(kind: LobbyKind) -> &'static str {
     match kind {
         LobbyKind::Standard => "standard",
         LobbyKind::QuickPlay => "quickplay",
         LobbyKind::Private => "private",
+    }
+}
+
+pub fn publish_clients_by_country(counts: HashMap<String, usize>) {
+    let mut published = PUBLISHED_COUNTRIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    for country in published.iter() {
+        if !counts.contains_key(country) {
+            gauge!(CLIENTS_BY_COUNTRY, "country" => country.clone()).set(0.0);
+        }
+    }
+
+    for (country, count) in counts {
+        gauge!(CLIENTS_BY_COUNTRY, "country" => country.clone()).set(count as f64);
+        published.insert(country);
     }
 }
 
@@ -67,6 +102,7 @@ pub fn install() -> PrometheusHandle {
         .install_recorder()
         .expect("failed to install metrics recorder");
 
+    STARTED_AT.get_or_init(unix_now);
     describe();
 
     handle
@@ -76,6 +112,10 @@ fn describe() {
     describe_gauge!(
         CLIENTS_CONNECTED,
         "Clients connected to the matchmaking websocket"
+    );
+    describe_gauge!(
+        CLIENTS_BY_COUNTRY,
+        "Clients connected to the matchmaking websocket, by country code"
     );
     describe_gauge!(LOBBIES, "Lobbies currently alive, by kind");
     describe_gauge!(GAMES_ACTIVE, "Lobbies with a match running, by kind");
@@ -91,6 +131,17 @@ fn describe() {
         PLAYER_RATING,
         "Hidden rating of the current top players, by player_id and name"
     );
+    describe_gauge!(
+        MATCH_REPORTS_PENDING,
+        "Matches waiting for the remaining players' result reports"
+    );
+    describe_gauge!(PLAYERS_TOTAL, "Players known to the rating storage");
+    describe_gauge!(PLAYERS_ACTIVE, "Players identified within the window");
+    describe_gauge!(
+        RATED_MATCHES_RECENT,
+        "Rated matches recorded within the window"
+    );
+    describe_gauge!(START_TIME_SECONDS, "Unix time the server process started");
 
     describe_counter!(
         CONNECTIONS_TOTAL,
@@ -124,7 +175,22 @@ fn describe() {
         GEOIP_FAILURES_TOTAL,
         "Connections dropped because the geoip lookup failed"
     );
-    describe_counter!(SKIN_CHUNKS_TOTAL, "Custom skin chunks handled, by result");
+    describe_counter!(
+        RATING_REPORTS_TOTAL,
+        "Completed match reports reaching rating, by outcome and skip reason"
+    );
+    describe_counter!(
+        RATING_RATED_TOTAL,
+        "Matches or series that updated ratings, by pairing weight"
+    );
+    describe_counter!(
+        RATING_UNRATED_TOTAL,
+        "Matches or series recorded without a rating update, by reason"
+    );
+    describe_counter!(
+        MATCH_REPORTS_DROPPED_TOTAL,
+        "Partial match reports discarded before every player reported, by reason"
+    );
 
     describe_histogram!(
         MATCH_DURATION_SECONDS,
@@ -141,6 +207,9 @@ async fn metrics_handler(
     State((state, handle)): State<(Arc<AppState>, PrometheusHandle)>,
 ) -> String {
     state.publish_metrics_gauges().await;
+    if let Some(started_at) = STARTED_AT.get() {
+        gauge!(START_TIME_SECONDS).set(*started_at as f64);
+    }
     handle.run_upkeep();
     handle.render()
 }

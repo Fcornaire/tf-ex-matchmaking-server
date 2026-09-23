@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
+use crate::msg::PlayerPing;
 use crate::services::geoip::Location;
 use crate::state::series::Series;
 
@@ -19,7 +20,10 @@ pub enum EndGameChoice {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub struct EndGameVote {
+    #[serde(skip)]
     pub addr: String,
+    #[serde(default)]
+    pub room_peer_id: String,
     pub choice: EndGameChoice,
 }
 
@@ -273,23 +277,37 @@ impl Lobby {
             .collect()
     }
 
-    pub fn update_player(&mut self, player: Player) {
+    pub fn update_player(&mut self, addr: &str, player: Player) {
+        let Some(p) = self.players.iter_mut().find(|p| p.addr == addr) else {
+            return;
+        };
+
+        let custom_variants = if player.custom_variants.is_empty() {
+            std::mem::take(&mut p.custom_variants)
+        } else {
+            player.custom_variants.clone()
+        };
+
+        *p = Player {
+            addr: std::mem::take(&mut p.addr),
+            room_peer_id: std::mem::take(&mut p.room_peer_id),
+            is_host: p.is_host,
+            ping: p.ping,
+            seat: p.seat,
+            custom_variants,
+            ..player
+        };
+    }
+
+    pub fn member_pings(&self) -> Vec<PlayerPing> {
         self.players
-            .iter_mut()
-            .find(|p| p.addr() == player.addr())
-            .map(|p| {
-                let ping = p.ping;
-                let seat = p.seat;
-                let custom_variants = if player.custom_variants.is_empty() {
-                    std::mem::take(&mut p.custom_variants)
-                } else {
-                    player.custom_variants.clone()
-                };
-                *p = player;
-                p.ping = ping;
-                p.seat = seat;
-                p.custom_variants = custom_variants;
-            });
+            .iter()
+            .chain(self.spectators.iter())
+            .map(|p| PlayerPing {
+                room_peer_id: p.room_peer_id(),
+                ping: p.ping(),
+            })
+            .collect()
     }
 
     pub fn has_member(&self, addr: &str) -> bool {
@@ -370,9 +388,14 @@ impl Lobby {
     }
 
     fn record_choice(&mut self, addr: String, choice: EndGameChoice) {
-        if !self.players.iter().any(|p| p.addr() == addr) {
+        let Some(room_peer_id) = self
+            .players
+            .iter()
+            .find(|p| p.addr == addr)
+            .map(|p| p.room_peer_id())
+        else {
             return;
-        }
+        };
 
         let Some(end_game_choice) = &mut self.end_game_choice else {
             error!("No end game choice meaning the game is not over or already over");
@@ -381,7 +404,11 @@ impl Lobby {
 
         match end_game_choice.iter_mut().find(|vote| vote.addr == addr) {
             Some(vote) => vote.choice = choice,
-            None => end_game_choice.push(EndGameVote { addr, choice }),
+            None => end_game_choice.push(EndGameVote {
+                addr,
+                room_peer_id,
+                choice,
+            }),
         }
     }
 
@@ -436,6 +463,7 @@ pub struct GameData {
 #[serde(rename_all = "PascalCase")]
 pub struct Player {
     name: String,
+    #[serde(skip)]
     addr: String,
     archer_index: i32,
     archer_alt_index: i32,

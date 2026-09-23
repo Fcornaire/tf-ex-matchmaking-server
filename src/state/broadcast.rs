@@ -1,13 +1,9 @@
 use std::net::SocketAddr;
 
 use axum_typed_websockets::Message;
-use metrics::counter;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
-use crate::{
-    msg::{PlayerPing, ServerMsg, SkinChunk},
-    telemetry,
-};
+use crate::msg::{ServerMsg, SkinChunk};
 
 use super::{lobby::Lobby, AppState};
 
@@ -33,25 +29,35 @@ impl AppState {
     }
 
     pub async fn send_msg_to_addrs(&self, addrs: &[String], msg: ServerMsg) {
-        let mut connexions = self.connections.lock().await;
         let quiet = matches!(
             msg,
             ServerMsg::PingUpdate { .. } | ServerMsg::QuickPlayStatus { .. }
         );
 
-        for (addr, sender) in connexions.iter_mut() {
-            if addrs.iter().any(|kicked| *kicked == addr.to_string()) {
-                if !quiet {
-                    info!("Sending {:?} to {}", msg.clone(), addr.to_string());
-                }
+        let targets: Vec<_> = {
+            let connexions = self.connections.lock().await;
 
-                let _ = sender.send(Message::Item(msg.clone())).await;
+            connexions
+                .iter()
+                .filter(|(addr, _)| addrs.iter().any(|target| *target == addr.to_string()))
+                .map(|(addr, sender)| (*addr, sender.clone()))
+                .collect()
+        };
+
+        for (addr, sender) in targets {
+            if !quiet {
+                debug!(
+                    "Sending {} to {}",
+                    msg.kind(),
+                    self.client_label(addr).await
+                );
             }
+
+            let _ = sender.send(Message::Item(msg.clone())).await;
         }
     }
 
     pub(super) async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
-        let mut connexions = self.connections.lock().await;
         let is_quiet_msg = matches!(
             msg,
             ServerMsg::PingUpdate { .. }
@@ -59,20 +65,32 @@ impl AppState {
                 | ServerMsg::SkinChunk { .. }
         );
 
-        for (addr, sender) in connexions.iter_mut() {
-            if lobby.players().iter().any(|p| p.addr() == addr.to_string())
-                || lobby
-                    .spectators()
-                    .iter()
-                    .any(|s| s.addr() == addr.to_string())
-            {
-                if !is_quiet_msg {
-                    info!("Sending {:?}  to {}", msg.clone(), addr.to_string());
-                }
+        let targets: Vec<_> = {
+            let connexions = self.connections.lock().await;
 
-                if let Err(err) = sender.send(Message::Item(msg.clone())).await {
-                    warn!("Could not send to {} (maybe disconnected ?): {}", addr, err);
-                }
+            connexions
+                .iter()
+                .filter(|(addr, _)| lobby.has_member(&addr.to_string()))
+                .map(|(addr, sender)| (*addr, sender.clone()))
+                .collect()
+        };
+
+        if !is_quiet_msg {
+            debug!(
+                "Sending {} to room {} ({} members)",
+                msg.kind(),
+                lobby.room_id(),
+                targets.len()
+            );
+        }
+
+        for (addr, sender) in targets {
+            if let Err(err) = sender.send(Message::Item(msg.clone())).await {
+                warn!(
+                    "Could not send to {} (maybe disconnected ?): {}",
+                    self.client_label(addr).await,
+                    err
+                );
             }
         }
     }
@@ -107,7 +125,6 @@ impl AppState {
             || chunk.bundle_id.len() > 128
             || chunk.custom_archer_id.len() > 256
         {
-            counter!(telemetry::SKIN_CHUNKS_TOTAL, "result" => "rejected").increment(1);
             return Err("Skin chunk rejected by size limits".to_string());
         }
 
@@ -131,8 +148,6 @@ impl AppState {
         self.send_msg_to_lobby(lobby, ServerMsg::SkinChunk { chunk, from })
             .await;
 
-        counter!(telemetry::SKIN_CHUNKS_TOTAL, "result" => "relayed").increment(1);
-
         Ok(())
     }
 
@@ -144,15 +159,7 @@ impl AppState {
             .find(|l| l.room_id() == room_id)
             .ok_or("Lobby not found".to_string())?;
 
-        let pings = lobby
-            .players()
-            .iter()
-            .chain(lobby.spectators().iter())
-            .map(|p| PlayerPing {
-                addr: p.addr(),
-                ping: p.ping(),
-            })
-            .collect();
+        let pings = lobby.member_pings();
 
         self.send_msg_to_lobby(lobby.clone(), ServerMsg::PingUpdate { pings })
             .await;

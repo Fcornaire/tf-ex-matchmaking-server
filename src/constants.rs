@@ -1,5 +1,6 @@
-pub static MONITOR_JOB_INTERVAL: u64 = 3600; // 1 hour
-pub static PURGE_EMPTY_LOBBIES_JOB_INTERVAL: u64 = 10;
+pub const SECONDS_PER_DAY: i64 = 86_400;
+
+pub static PURGE_JOB_INTERVAL: u64 = 10;
 pub static KEEP_ALIVE_INTERVAL: u64 = 3;
 
 pub const MAX_PLAYERS: usize = 4;

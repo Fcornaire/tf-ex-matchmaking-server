@@ -99,7 +99,10 @@ impl GeoipClient {
                     return Ok(Location::default());
                 }
 
-                let err = format!("Error while getting location from ip {} : {}", ip, body);
+                let err = format!(
+                    "Error while getting location : {}",
+                    body.replace(&ip.to_string(), "<ip>")
+                );
 
                 tracing::error!(err);
 

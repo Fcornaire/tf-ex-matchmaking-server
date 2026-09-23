@@ -133,7 +133,23 @@ impl AppState {
             }
         }
 
-        let clients = self.clients.lock().await.len();
+        let (clients, clients_by_country) = {
+            let clients = self.clients.lock().await;
+            let mut by_country: HashMap<String, usize> = HashMap::new();
+
+            for client in clients.values() {
+                let country = client.location.get_country_code();
+                let country = if country.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    country
+                };
+
+                *by_country.entry(country).or_default() += 1;
+            }
+
+            (clients.len(), by_country)
+        };
 
         let (signaling_rooms, signaling_peers) = {
             let signaling = self.signaling.lock().await;
@@ -154,8 +170,12 @@ impl AppState {
 
         gauge!(telemetry::SPECTATORS).set(spectators as f64);
         gauge!(telemetry::CLIENTS_CONNECTED).set(clients as f64);
+        telemetry::publish_clients_by_country(clients_by_country);
         gauge!(telemetry::SIGNALING_ROOMS).set(signaling_rooms as f64);
         gauge!(telemetry::SIGNALING_PEERS).set(signaling_peers as f64);
+
+        let pending_reports = self.match_reports.lock().await.len();
+        gauge!(telemetry::MATCH_REPORTS_PENDING).set(pending_reports as f64);
 
         if let Some(storage) = &self.storage {
             match storage.top_players(20).await {
@@ -169,6 +189,39 @@ impl AppState {
                     info!("Could not publish top players : {}", err);
                 }
             }
+
+            match storage.community_stats().await {
+                Ok(stats) => {
+                    gauge!(telemetry::PLAYERS_TOTAL).set(stats.players_total as f64);
+                    gauge!(telemetry::PLAYERS_ACTIVE, "window" => "24h")
+                        .set(stats.active_24h as f64);
+                    gauge!(telemetry::PLAYERS_ACTIVE, "window" => "7d").set(stats.active_7d as f64);
+                    gauge!(telemetry::RATED_MATCHES_RECENT, "window" => "24h")
+                        .set(stats.rated_24h as f64);
+                    gauge!(telemetry::RATED_MATCHES_RECENT, "window" => "7d")
+                        .set(stats.rated_7d as f64);
+                }
+                Err(err) => {
+                    info!("Could not publish community stats : {}", err);
+                }
+            }
+        }
+    }
+
+    pub async fn client_label(&self, addr: SocketAddr) -> String {
+        self.clients
+            .lock()
+            .await
+            .iter()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || *ipv6 == Some(addr))
+            .map(|(_, client)| client.label())
+            .unwrap_or_else(|| "unknown client".to_string())
+    }
+
+    pub async fn member_label(&self, addr: &str) -> String {
+        match addr.parse::<SocketAddr>() {
+            Ok(addr) => self.client_label(addr).await,
+            Err(_) => "unknown client".to_string(),
         }
     }
 
@@ -194,14 +247,15 @@ impl AppState {
                 .ok_or("Client not found".to_string())?;
 
             client.player_id = Some(player_id.clone());
+            client.name = name.clone();
         }
 
         if let Some(storage) = &self.storage {
             let rating = storage.get_or_create_player(player_id, name).await?;
 
             info!(
-                "Client {} identified as {} (rating {:.0}, {} matches)",
-                addr, rating.id, rating.rating, rating.matches_played
+                "{} ({}) identified (rating {:.0}, {} matches)",
+                rating.name, rating.id, rating.rating, rating.matches_played
             );
         }
 
@@ -338,7 +392,6 @@ impl AppState {
             .unwrap()
             .1;
 
-        client.name = lobby.name();
         client.room = Some(Room::new(lobby.room_id().clone()));
 
         let lobb = lobby.clone();
@@ -349,6 +402,7 @@ impl AppState {
         }
 
         let mut host = host_res.unwrap().clone();
+        client.name = host.name();
 
         host.update_addr(addr.to_string());
         host.update_room_peer_id(client.peer_id(lobby.room_id().clone()).unwrap());
@@ -586,8 +640,12 @@ impl AppState {
             return Err("Only the host can start the lobby".to_string());
         }
 
+        if lobby.in_game() {
+            return Err("Lobby already started".to_string());
+        }
+
         let series_started = if lobby.is_series_lobby() {
-            if lobby.in_game() || lobby.series_in_progress() {
+            if lobby.series_in_progress() {
                 return Err("Series already running".to_string());
             }
 
@@ -685,12 +743,13 @@ impl AppState {
     pub async fn update_player(&self, addr: SocketAddr, player: Player) -> Result<String, String> {
         let mut lobbies = self.lobbies.lock().await;
 
+        let addr = addr.to_string();
         let lobby = lobbies
             .iter_mut()
-            .find(|l| l.players().iter().any(|p| p.addr() == addr.to_string()))
+            .find(|l| l.players().iter().any(|p| p.addr() == addr))
             .ok_or("Lobby not found".to_string())?;
 
-        lobby.update_player(player);
+        lobby.update_player(&addr, player);
 
         Ok(lobby.room_id())
     }

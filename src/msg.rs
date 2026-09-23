@@ -42,7 +42,8 @@ pub enum ServerMsg {
     },
     QuickPlayStatus {
         queued: bool,
-        searching: u32,
+        searching_standard: u32,
+        searching_wide: u32,
         message: String,
     },
     QuickPlayMatchFound {
@@ -58,6 +59,30 @@ pub enum ServerMsg {
     },
 }
 
+impl ServerMsg {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::KeepAlive {} => "KeepAlive",
+            Self::GetLobbiesResponse { .. } => "GetLobbiesResponse",
+            Self::CreateLobbyResponse { .. } => "CreateLobbyResponse",
+            Self::JoinLobbyResponse { .. } => "JoinLobbyResponse",
+            Self::LobbyUpdate { .. } => "LobbyUpdate",
+            Self::PingUpdate { .. } => "PingUpdate",
+            Self::LeaveLobbyResponse { .. } => "LeaveLobbyResponse",
+            Self::LeaveLobbyForce {} => "LeaveLobbyForce",
+            Self::RematchLobby {} => "RematchLobby",
+            Self::StartLobby {} => "StartLobby",
+            Self::ArcherSelectLobby {} => "ArcherSelectLobby",
+            Self::SeriesLobby {} => "SeriesLobby",
+            Self::PrivateJoinResult { .. } => "PrivateJoinResult",
+            Self::QuickPlayStatus { .. } => "QuickPlayStatus",
+            Self::QuickPlayMatchFound { .. } => "QuickPlayMatchFound",
+            Self::SpectatorJoined { .. } => "SpectatorJoined",
+            Self::SkinChunk { .. } => "SkinChunk",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkinChunk {
     pub bundle_id: String,
@@ -70,7 +95,7 @@ pub struct SkinChunk {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlayerPing {
-    pub addr: String,
+    pub room_peer_id: String,
     pub ping: u32,
 }
 

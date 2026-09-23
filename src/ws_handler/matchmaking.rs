@@ -34,11 +34,6 @@ pub async fn matchmaking_handler(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    info!(
-        "New connection from raw {} with  headers {:?}",
-        addr, headers
-    );
-
     let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
         user_agent.to_string()
     } else {
@@ -87,10 +82,7 @@ pub async fn matchmaking_handler(
         addressv4 = Some(addr);
     }
 
-    info!(
-        "`{user_agent}` at ipv4 {:#?} / ipv6 {:#?} connected.",
-        addressv4, addressv6
-    );
+    info!("New connection from `{user_agent}`");
 
     let ips: Vec<SocketAddr> = vec![addressv4, addressv6]
         .into_iter()
@@ -116,13 +108,13 @@ pub async fn handle_socket(
     };
     let client = state.clone().clients.get_client(ip).await;
     if client.is_some() {
-        info!("Client {} already connected", ip);
+        info!("{} is already connected", state.client_label(ip).await);
         return;
     }
 
     let res = state.clone().add_new_client(ips.clone()).await;
     if res.is_err() {
-        info!("Client {} could not be added : {}", ip, res.unwrap_err());
+        info!("New client could not be added : {}", res.unwrap_err());
         return;
     }
 
@@ -143,8 +135,7 @@ pub async fn handle_socket(
             counter!(telemetry::CONNECTIONS_TOTAL).increment(1);
         }
         Err(err) => {
-            warn!("Client {} could not be added : {}", ip, err);
-            info!("Thus Websocket context {} destroyed", ip);
+            warn!("New client connection could not be registered : {}", err);
             return;
         }
     }
@@ -157,9 +148,13 @@ pub async fn handle_socket(
 
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
-            if !matches!(msg, Ok(Message::Item(ClientMsg::KeepAlive {}))) {
+            let who = if matches!(msg, Ok(Message::Item(ClientMsg::KeepAlive {}))) {
+                String::new()
+            } else {
                 debug!("Received message: {:?}", msg);
-            }
+                cloned_state_recv.client_label(ip).await
+            };
+
             match msg {
                 Ok(Message::Item(item)) => match item {
                     ClientMsg::KeepAlive {} => {
@@ -177,14 +172,16 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::Identify { player_id, name } => {
+                        let claimed = format!("{} ({})", name, player_id);
+
                         if let Err(err) =
                             cloned_state_recv.identify_client(ip, player_id, name).await
                         {
-                            warn!("Client {} identify rejected : {}", ip, err);
+                            warn!("Identify from {} rejected : {}", claimed, err);
                         }
                     }
                     ClientMsg::GetLobbies {} => {
-                        info!("Client {} requested lobbies", ip);
+                        debug!("{} requested lobbies", who);
 
                         let lobbies: Vec<Lobby> = cloned_state_recv.get_lobbies(ip).await;
 
@@ -194,7 +191,7 @@ pub async fn handle_socket(
                             .unwrap();
                     }
                     ClientMsg::CreateLobby { mut lobby } => {
-                        info!("Client {} want to create a lobby", ip);
+                        info!("{} wants to create a lobby", who);
 
                         cloned_state_recv.exit_quick_play(ip).await;
 
@@ -210,7 +207,7 @@ pub async fn handle_socket(
                                     .unwrap();
                             }
                             Err(err) => {
-                                warn!("Error client {} creating lobby : {}", ip, err);
+                                warn!("{} could not create a lobby : {}", who, err);
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::CreateLobbyResponse {
                                         success: false,
@@ -227,10 +224,7 @@ pub async fn handle_socket(
                         name,
                         is_player,
                     } => {
-                        info!(
-                            "Client {} want to join lobby {room_id}, is a player {is_player}",
-                            ip
-                        );
+                        info!("{who} wants to join lobby {room_id}, is a player {is_player}");
 
                         cloned_state_recv.exit_quick_play(ip).await;
 
@@ -265,7 +259,7 @@ pub async fn handle_socket(
                                 }
                             }
                             Err(err) => {
-                                warn!("Error client {} joining lobby : {}", ip, err);
+                                warn!("{} could not join lobby : {}", who, err);
 
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::JoinLobbyResponse {
@@ -280,10 +274,7 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::EnterQuickPlay { name, is_wide } => {
-                        info!(
-                            "Client {} entered the quickplay queue (wide: {is_wide})",
-                            ip
-                        );
+                        info!("{who} entered the quickplay queue (wide: {is_wide})");
 
                         let outcome = cloned_state_recv.enter_quick_play(ip, name, is_wide).await;
 
@@ -297,11 +288,12 @@ pub async fn handle_socket(
                             .increment(1);
 
                         match outcome {
-                            QuickPlayOutcome::Queued { searching } => {
+                            QuickPlayOutcome::Queued(counts) => {
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::QuickPlayStatus {
                                         queued: true,
-                                        searching,
+                                        searching_standard: counts.standard,
+                                        searching_wide: counts.wide,
                                         message: "".to_string(),
                                     }))
                                     .await
@@ -311,11 +303,7 @@ pub async fn handle_socket(
                                 lobby,
                                 room_peer_id,
                             } => {
-                                info!(
-                                    "Client {} seated into quickplay lobby {}",
-                                    ip,
-                                    lobby.room_id()
-                                );
+                                info!("{} seated into quickplay lobby {}", who, lobby.room_id());
 
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::QuickPlayMatchFound {
@@ -340,10 +328,11 @@ pub async fn handle_socket(
                                 partner_addr,
                                 partner_peer_id,
                             } => {
+                                let partner = cloned_state_recv.member_label(&partner_addr).await;
                                 info!(
-                                    "Client {} paired with {} in quickplay lobby {}",
-                                    ip,
-                                    partner_addr,
+                                    "{} paired with {} in quickplay lobby {}",
+                                    who,
+                                    partner,
                                     lobby.room_id()
                                 );
 
@@ -366,12 +355,13 @@ pub async fn handle_socket(
                                     .await;
                             }
                             QuickPlayOutcome::Failed { message } => {
-                                warn!("Quickplay enter failed for {} : {}", ip, message);
+                                warn!("Quickplay enter failed for {} : {}", who, message);
 
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::QuickPlayStatus {
                                         queued: false,
-                                        searching: 0,
+                                        searching_standard: 0,
+                                        searching_wide: 0,
                                         message,
                                     }))
                                     .await
@@ -380,14 +370,15 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::ExitQuickPlay {} => {
-                        info!("Client {} left the quickplay queue", ip);
+                        info!("{} left the quickplay queue", who);
 
-                        let searching = cloned_state_recv.exit_quick_play(ip).await;
+                        let counts = cloned_state_recv.exit_quick_play(ip).await;
 
                         send_task_in_rcv
                             .send(Message::Item(ServerMsg::QuickPlayStatus {
                                 queued: false,
-                                searching,
+                                searching_standard: counts.standard,
+                                searching_wide: counts.wide,
                                 message: "".to_string(),
                             }))
                             .await
@@ -399,8 +390,7 @@ pub async fn handle_socket(
                         is_player,
                     } => {
                         info!(
-                            "Client {} want to join a private lobby by code, is a player {is_player}",
-                            ip
+                            "{who} wants to join a private lobby by code, is a player {is_player}"
                         );
 
                         cloned_state_recv.exit_quick_play(ip).await;
@@ -439,7 +429,7 @@ pub async fn handle_socket(
                                 }
                             }
                             Err(err) => {
-                                warn!("Error client {} joining private lobby : {}", ip, err);
+                                warn!("{} could not join private lobby : {}", who, err);
 
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::PrivateJoinResult {
@@ -454,7 +444,7 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::UpdatePlayer { player } => {
-                        info!("Client {} want to update player", ip);
+                        debug!("{} wants to update player", who);
 
                         match cloned_state_recv.update_player(ip, player).await {
                             Ok(room_id) => {
@@ -489,7 +479,7 @@ pub async fn handle_socket(
                         game_data,
                         mods,
                     } => {
-                        info!("Client {} want to update lobby settings", ip);
+                        debug!("{} wants to update lobby settings", who);
 
                         match cloned_state_recv
                             .update_lobby_settings(ip, max_players, game_data, mods)
@@ -511,7 +501,7 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::LeaveLobby {} => {
-                        info!("Client {} want to leave lobby", ip);
+                        info!("{} wants to leave lobby", who);
 
                         match cloned_state_recv.remove_from_lobby(ip).await {
                             Ok(room_id) => {
@@ -546,7 +536,7 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::StartLobbyChoice {} => {
-                        info!("Client {} wants to start the lobby early", ip);
+                        info!("{} wants to start the lobby early", who);
 
                         if let Err(err) = cloned_state_recv.start_lobby(ip).await {
                             warn!("Error starting lobby : {}", err);
@@ -569,7 +559,7 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::SeriesContinueChoice {} => {
-                        info!("Client {} is ready for the next series game", ip);
+                        info!("{} is ready for the next series game", who);
 
                         match cloned_state_recv.series_continue_choice(ip).await {
                             Ok(room_id) => {
@@ -589,7 +579,7 @@ pub async fn handle_socket(
                         }
                     }
                     ClientMsg::SeriesPickMap { map_id } => {
-                        info!("Client {} picks tower {} for the series", ip, map_id);
+                        info!("{} picks tower {} for the series", who, map_id);
 
                         match cloned_state_recv.pick_series_map(ip, map_id).await {
                             Ok(room_id) => {
@@ -605,12 +595,12 @@ pub async fn handle_socket(
                                 cloned_state_recv.try_start_series_game(room_id).await;
                             }
                             Err(err) => {
-                                warn!("Series pick from {} rejected : {}", ip, err);
+                                warn!("Series pick from {} rejected : {}", who, err);
                             }
                         }
                     }
                     ClientMsg::RematchLobbyChoice {} => {
-                        info!("Client {} want to rematch lobby", ip);
+                        info!("{} wants to rematch lobby", who);
 
                         match cloned_state_recv.rematch_lobby(ip).await {
                             Ok(room_id) => {
@@ -631,11 +621,11 @@ pub async fn handle_socket(
                     }
                     ClientMsg::SkinChunk { chunk } => {
                         if let Err(err) = cloned_state_recv.relay_skin_chunk(ip, chunk).await {
-                            warn!("Skin chunk from {} rejected : {}", ip, err);
+                            warn!("Skin chunk from {} rejected : {}", who, err);
                         }
                     }
                     ClientMsg::ArcherSelectChoice {} => {
-                        info!("Client {} want to go select archer", ip);
+                        info!("{} wants to go select archer", who);
 
                         match cloned_state_recv.archer_select_choice_lobby(ip).await {
                             Ok(room_id) => {
@@ -656,7 +646,7 @@ pub async fn handle_socket(
                     }
                 },
                 Ok(Message::Close(_fame)) => {
-                    info!("Client {} closed connection", ip);
+                    info!("{} closed connection", who);
 
                     send_task_in_rcv
                         .send(Message::Close(None))
@@ -685,15 +675,13 @@ pub async fn handle_socket(
                 .find(|((ipv4, _), _)| *ipv4 == ip)
                 .map(|c| c.1);
 
-            if client.is_none() {
-                tracing::info!("Client {} not found", ip);
+            let Some(client) = client else {
+                info!("Keep alive stopped, client already removed");
                 break;
-            }
+            };
 
-            let client = client.unwrap();
-
-            if !(*client).is_alive() {
-                tracing::info!("Client {} is no more alive, aborting...", ip);
+            if !client.is_alive() {
+                info!("{} is no longer alive, aborting...", client.label());
                 break;
             }
 
@@ -723,6 +711,8 @@ pub async fn handle_socket(
 
     counter!(telemetry::DISCONNECTS_TOTAL, "reason" => disconnect_reason).increment(1);
 
+    let who = state.client_label(ip).await;
+
     state.exit_quick_play(ip).await;
 
     let mut clients = state.clone().clients.clone();
@@ -731,7 +721,7 @@ pub async fn handle_socket(
 
     if let Some(cli) = client {
         if cli.room.is_some() {
-            info!("Client {} was in a lobby", ip);
+            info!("{} was in a lobby", who);
 
             match state.remove_from_lobby(ip).await {
                 Ok(room_id) => {
@@ -744,7 +734,7 @@ pub async fn handle_socket(
                 Err(err) => {
                     warn!(
                         "Error removing {} from lobby (might already be deleted): {}",
-                        ip, err
+                        who, err
                     );
                 }
             }
@@ -760,5 +750,5 @@ pub async fn handle_socket(
         }
     }
 
-    info!("Websocket context {} destroyed", ip);
+    info!("Websocket context for {} destroyed", who);
 }

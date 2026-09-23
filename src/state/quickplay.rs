@@ -31,11 +31,24 @@ fn lobby_is_wide(lobby: &Lobby) -> bool {
     })
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct QueueCounts {
+    pub standard: u32,
+    pub wide: u32,
+}
+
+fn queue_counts(queue: &[QueuedPlayer]) -> QueueCounts {
+    let wide = queue.iter().filter(|q| q.is_wide).count() as u32;
+
+    QueueCounts {
+        standard: queue.len() as u32 - wide,
+        wide,
+    }
+}
+
 #[derive(Debug)]
 pub enum QuickPlayOutcome {
-    Queued {
-        searching: u32,
-    },
+    Queued(QueueCounts),
     Seated {
         lobby: Lobby,
         room_peer_id: String,
@@ -138,9 +151,7 @@ impl AppState {
                     queued_at: Instant::now(),
                 });
 
-                return QuickPlayOutcome::Queued {
-                    searching: queue.len() as u32,
-                };
+                return QuickPlayOutcome::Queued(queue_counts(&queue));
             };
 
             partner_client.room = Some(Room::new(room_id.clone()));
@@ -226,17 +237,15 @@ impl AppState {
             queued_at: Instant::now(),
         });
 
-        QuickPlayOutcome::Queued {
-            searching: queue.len() as u32,
-        }
+        QuickPlayOutcome::Queued(queue_counts(&queue))
     }
 
-    pub async fn exit_quick_play(&self, addr: SocketAddr) -> u32 {
+    pub async fn exit_quick_play(&self, addr: SocketAddr) -> QueueCounts {
         let mut queue = self.queue.lock().await;
 
         queue.retain(|q| q.addr != addr);
 
-        queue.len() as u32
+        queue_counts(&queue)
     }
 
     fn nearest_open_quick_play<'a>(
@@ -302,7 +311,11 @@ impl AppState {
         }
 
         for (addr, lobby, peer) in seated {
-            info!("Quickplay drain seated {} into {}", addr, lobby.room_id());
+            info!(
+                "Quickplay drain seated {} into {}",
+                self.member_label(&addr).await,
+                lobby.room_id()
+            );
 
             self.send_msg_to_addrs(
                 &[addr],
@@ -363,12 +376,12 @@ impl AppState {
     }
 
     async fn push_queue_status(&self) {
-        let (addrs, searching) = {
+        let (addrs, counts) = {
             let queue = self.queue.lock().await;
 
             (
                 queue.iter().map(|q| q.addr.to_string()).collect::<Vec<_>>(),
-                queue.len() as u32,
+                queue_counts(&queue),
             )
         };
 
@@ -380,7 +393,8 @@ impl AppState {
             &addrs,
             ServerMsg::QuickPlayStatus {
                 queued: true,
-                searching,
+                searching_standard: counts.standard,
+                searching_wide: counts.wide,
                 message: "".to_string(),
             },
         )
@@ -412,7 +426,13 @@ mod tests {
         let queued = state
             .enter_quick_play(first, "first".to_string(), false)
             .await;
-        assert!(matches!(queued, QuickPlayOutcome::Queued { searching: 1 }));
+        assert!(matches!(
+            queued,
+            QuickPlayOutcome::Queued(QueueCounts {
+                standard: 1,
+                wide: 0
+            })
+        ));
 
         let paired = state
             .enter_quick_play(second, "second".to_string(), false)
@@ -486,10 +506,13 @@ mod tests {
             .await;
         assert!(matches!(
             requeued,
-            QuickPlayOutcome::Queued { searching: 1 }
+            QuickPlayOutcome::Queued(QueueCounts {
+                standard: 1,
+                wide: 0
+            })
         ));
 
-        assert_eq!(state.exit_quick_play(first).await, 0);
+        assert_eq!(state.exit_quick_play(first).await, QueueCounts::default());
 
         state
             .enter_quick_play(first, "first".to_string(), false)
@@ -514,14 +537,23 @@ mod tests {
         let queued = state
             .enter_quick_play(first, "first".to_string(), true)
             .await;
-        assert!(matches!(queued, QuickPlayOutcome::Queued { searching: 1 }));
+        assert!(matches!(
+            queued,
+            QuickPlayOutcome::Queued(QueueCounts {
+                standard: 0,
+                wide: 1
+            })
+        ));
 
         let still_queued = state
             .enter_quick_play(second, "second".to_string(), false)
             .await;
         assert!(matches!(
             still_queued,
-            QuickPlayOutcome::Queued { searching: 2 }
+            QuickPlayOutcome::Queued(QueueCounts {
+                standard: 1,
+                wide: 1
+            })
         ));
 
         let paired = state
@@ -538,7 +570,7 @@ mod tests {
 
         assert_eq!(partner_addr, first.to_string());
         assert!(lobby_is_wide(&lobby));
-        assert_eq!(state.exit_quick_play(second).await, 0);
+        assert_eq!(state.exit_quick_play(second).await, QueueCounts::default());
     }
 
     #[tokio::test]

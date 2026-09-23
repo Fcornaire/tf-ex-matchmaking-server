@@ -1,6 +1,5 @@
 use axum::{
     extract::{
-        connect_info::ConnectInfo,
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
@@ -9,10 +8,10 @@ use axum::{
 };
 use futures::{stream::SplitSink, StreamExt};
 use matchbox_protocol::{JsonPeerEvent, JsonPeerRequest, PeerRequest};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     constants::KEEP_ALIVE_INTERVAL,
@@ -29,10 +28,7 @@ pub async fn signaling_handler(
     room_id: Option<Path<RoomId>>,
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    info!("`Signaling: {addr}` connected.");
-
     let room_id = room_id.map(|path| path.0).unwrap_or_default();
     let next = params
         .get("next")
@@ -46,7 +42,6 @@ pub async fn signaling_handler(
         handle_ws(
             websocket,
             state,
-            addr,
             RequestedRoom { id: room_id, next },
             requested_peer,
         )
@@ -79,7 +74,6 @@ fn spawn_sender_task(
 async fn handle_ws(
     websocket: WebSocket,
     state: Arc<AppState>,
-    addr: SocketAddr,
     requested_room: RequestedRoom,
     requested_peer: Option<uuid::Uuid>,
 ) {
@@ -91,20 +85,22 @@ async fn handle_ws(
     let peer_uuid: matchbox_protocol::PeerId = match requested_peer {
         Some(uuid) => uuid.into(),
         None => {
-            warn!("Signaling {addr}: no peer token for room {room_id}, refusing");
+            warn!("Signaling: no peer token for room {room_id}, refusing");
             return;
         }
     };
 
-    if state
+    let Some(client) = state
         .clients
         .get_client_by_room_peer(room_id.clone(), peer_uuid.0.to_string())
         .await
-        .is_none()
-    {
-        warn!("Signaling {addr}: peer {peer_uuid:?} is not a member of room {room_id}, refusing");
+    else {
+        warn!("Signaling: peer {peer_uuid:?} is not a member of room {room_id}, refusing");
         return;
-    }
+    };
+
+    let who = client.label();
+    info!("Signaling: {who} connected to room {room_id}");
 
     state
         .clients
@@ -145,6 +141,8 @@ async fn handle_ws(
     let cloned_state_recv = state.clone();
     let cloned_state_loop = state.clone();
     let requested_room_clone = requested_room.clone();
+    let who_recv = who.clone();
+    let who_loop = who.clone();
 
     // The state machine for the data channel established for this websocket.
     let mut recv_task = tokio::spawn(async move {
@@ -157,12 +155,10 @@ async fn handle_ws(
                 }
             };
 
-            if !matches!(request, PeerRequest::KeepAlive) {
-                info!("{:?} <- {:?}", peer_uuid, request);
-            }
-
             match request {
                 PeerRequest::Signal { receiver, data } => {
+                    debug!("Signaling: {} sent a signal to {:?}", who_recv, receiver);
+
                     let event = Message::Text(
                         JsonPeerEvent::Signal {
                             sender: peer_uuid,
@@ -199,7 +195,7 @@ async fn handle_ws(
                 .await;
 
             if client.is_none() {
-                warn!("Client {addr} not found in matchmaking, closing connection");
+                warn!("Signaling: {who_loop} not found in matchmaking, closing connection");
                 break;
             }
         }
@@ -207,11 +203,11 @@ async fn handle_ws(
 
     tokio::select! {
         _ = (&mut recv_task) => {
-            info!("signaling {} : {:?} disconnected", addr, peer_uuid);
+            info!("Signaling: {} disconnected", who);
             loop_task.abort();
         }
         _ = (&mut loop_task) => {
-            info!("matchmaking {} : {:?} disconnected", addr, peer_uuid);
+            info!("Signaling: {} left matchmaking, closing", who);
             recv_task.abort();
         }
     }

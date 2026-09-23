@@ -26,6 +26,20 @@ impl Client {
         }
     }
 
+    pub fn label(&self) -> String {
+        let who = match (&self.player_id, self.name.is_empty()) {
+            (Some(id), false) => format!("{} ({})", self.name, id),
+            (Some(id), true) => id.clone(),
+            (None, false) => self.name.clone(),
+            (None, true) => "unidentified client".to_string(),
+        };
+
+        match self.location.get_country_code() {
+            country if country.is_empty() => who,
+            country => format!("{} [{}]", who, country),
+        }
+    }
+
     pub fn keep_alive_sent(&mut self) {
         self.last_keep_alive_sent = Some(Instant::now());
     }
