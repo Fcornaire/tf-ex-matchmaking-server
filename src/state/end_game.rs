@@ -148,6 +148,10 @@ impl AppState {
 
         self.clear_match_reports(&room_id).await;
 
+        if remaining.players().is_empty() {
+            self.purge_lobby_async().await;
+        }
+
         if !kicked.is_empty() {
             info!(
                 "End game for room {} : dropping {} player(s) because no choice",

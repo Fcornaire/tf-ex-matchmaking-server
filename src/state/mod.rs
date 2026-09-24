@@ -358,6 +358,7 @@ impl AppState {
             .lock()
             .await
             .iter()
+            .filter(|l| l.players().iter().any(|p| p.is_host()))
             .filter(|l| match l.kind() {
                 LobbyKind::Standard => !l.is_full() || l.in_game() || l.series_in_progress(),
                 LobbyKind::QuickPlay => l.in_game(),
