@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
-use crate::msg::PlayerPing;
 use crate::services::geoip::Location;
 use crate::state::series::Series;
 
@@ -292,35 +291,15 @@ impl Lobby {
             addr: std::mem::take(&mut p.addr),
             room_peer_id: std::mem::take(&mut p.room_peer_id),
             is_host: p.is_host,
-            ping: p.ping,
             seat: p.seat,
             custom_variants,
             ..player
         };
     }
 
-    pub fn member_pings(&self) -> Vec<PlayerPing> {
-        self.players
-            .iter()
-            .chain(self.spectators.iter())
-            .map(|p| PlayerPing {
-                room_peer_id: p.room_peer_id(),
-                ping: p.ping(),
-            })
-            .collect()
-    }
-
     pub fn has_member(&self, addr: &str) -> bool {
         self.players.iter().any(|p| p.addr() == addr)
             || self.spectators.iter().any(|p| p.addr() == addr)
-    }
-
-    pub fn set_member_ping(&mut self, addr: &str, ping: u32) {
-        self.players
-            .iter_mut()
-            .chain(self.spectators.iter_mut())
-            .filter(|p| p.addr() == addr)
-            .for_each(|p| p.set_ping(ping));
     }
 
     pub fn add_player(&mut self, mut player: Player) {
@@ -471,8 +450,6 @@ pub struct Player {
     room_peer_id: String,
     is_host: bool,
     #[serde(default)]
-    ping: u32,
-    #[serde(default)]
     seat: usize,
     #[serde(default = "neutral_team")]
     team: i32,
@@ -498,7 +475,6 @@ impl Player {
             room_peer_id,
             ready: false,
             is_host,
-            ping: 0,
             seat: 0,
             team: neutral_team(),
             custom_archer_id: String::new(),
@@ -549,14 +525,6 @@ impl Player {
 
     pub fn update_room_peer_id(&mut self, room_peer_id: String) {
         self.room_peer_id = room_peer_id;
-    }
-
-    pub fn set_ping(&mut self, ping: u32) {
-        self.ping = ping;
-    }
-
-    pub fn ping(&self) -> u32 {
-        self.ping
     }
 }
 

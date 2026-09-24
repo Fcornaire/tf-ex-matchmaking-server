@@ -57,6 +57,7 @@ pub struct AppState {
     pub clients: Clients,
     geoip_client: GeoipClient,
     pub signaling: Arc<Mutex<SignalingState>>,
+    pub ping_measurement_signaling: Arc<Mutex<SignalingState>>,
     lobbies: Lobbies,
     connections: Arc<Mutex<HashMap<SocketAddr, Sender<Message<ServerMsg>>>>>,
     end_game_countdowns: Arc<Mutex<HashMap<String, u64>>>,
@@ -78,6 +79,7 @@ impl AppState {
             clients: Arc::new(Mutex::new(HashMap::new())),
             geoip_client: GeoipClient::new(),
             signaling: Arc::new(Mutex::new(SignalingState::default())),
+            ping_measurement_signaling: Arc::new(Mutex::new(SignalingState::default())),
             lobbies: Arc::new(Mutex::new(vec![])),
             connections: Arc::new(Mutex::new(HashMap::new())),
             end_game_countdowns: Arc::new(Mutex::new(HashMap::new())),
@@ -282,26 +284,17 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn record_keep_alive_rtt(&self, addr: SocketAddr) -> Option<String> {
-        let ping = {
-            let mut clients = self.clients.lock().await;
+    pub async fn record_keep_alive_rtt(&self, addr: SocketAddr) {
+        let mut clients = self.clients.lock().await;
 
-            let (_, client) = clients.iter_mut().find(|((ipv4, ipv6), _)| {
-                *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr
-            })?;
+        let rtt = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
+            .and_then(|(_, client)| client.take_keep_alive_rtt());
 
-            client.take_keep_alive_rtt()?
-        };
-
-        histogram!(telemetry::KEEPALIVE_RTT_SECONDS).record(ping as f64 / 1000.0);
-
-        let mut lobbies = self.lobbies.lock().await;
-        let addr = addr.to_string();
-        let lobby = lobbies.iter_mut().find(|l| l.has_member(&addr))?;
-
-        lobby.set_member_ping(&addr, ping);
-
-        Some(lobby.room_id())
+        if let Some(rtt) = rtt {
+            histogram!(telemetry::KEEPALIVE_RTT_SECONDS).record(rtt as f64 / 1000.0);
+        }
     }
 
     pub async fn add_connexion(
@@ -790,22 +783,24 @@ impl AppState {
     }
 
     pub async fn remove_all_empty_signaling_rooms(&self) {
-        let mut signaling = self.signaling.lock().await;
+        for signaling in [&self.signaling, &self.ping_measurement_signaling] {
+            let mut signaling = signaling.lock().await;
 
-        let mut rooms_to_remove = vec![];
+            let mut rooms_to_remove = vec![];
 
-        for (room, peers) in signaling.rooms.iter() {
-            if peers.is_empty() {
-                rooms_to_remove.push(room.clone());
+            for (room, peers) in signaling.rooms.iter() {
+                if peers.is_empty() {
+                    rooms_to_remove.push(room.clone());
+                }
             }
-        }
 
-        for room in rooms_to_remove.clone() {
-            signaling.rooms.remove(&room);
-        }
+            for room in rooms_to_remove.clone() {
+                signaling.rooms.remove(&room);
+            }
 
-        if rooms_to_remove.len() > 0 {
-            info!("Removed {} empty signaling rooms", rooms_to_remove.len());
+            if rooms_to_remove.len() > 0 {
+                info!("Removed {} empty signaling rooms", rooms_to_remove.len());
+            }
         }
     }
 }

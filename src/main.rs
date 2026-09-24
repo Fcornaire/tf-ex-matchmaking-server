@@ -23,7 +23,10 @@ use tracing_subscriber::FmtSubscriber;
 
 use crate::{
     state::AppState,
-    ws_handler::{matchmaking::matchmaking_handler, signaling::signaling_handler},
+    ws_handler::{
+        matchmaking::matchmaking_handler,
+        signaling::{ping_measurement_handler, signaling_handler},
+    },
 };
 
 use crate::jobs::spawn_jobs;
@@ -99,6 +102,7 @@ async fn main() {
         .fallback_service(ServeDir::new(assets_dir).append_index_html_on_directories(true))
         .route("/ws", get(matchmaking_handler))
         .route("/room/:room_id", get(signaling_handler))
+        .route("/ping_measurement/:room_id", get(ping_measurement_handler))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),

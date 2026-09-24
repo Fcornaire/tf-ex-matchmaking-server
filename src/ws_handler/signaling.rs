@@ -29,6 +29,26 @@ pub async fn signaling_handler(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    upgrade(ws, room_id, params, state, false)
+}
+
+/// Lobby ping measurement
+pub async fn ping_measurement_handler(
+    ws: WebSocketUpgrade,
+    room_id: Option<Path<RoomId>>,
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    upgrade(ws, room_id, params, state, true)
+}
+
+fn upgrade(
+    ws: WebSocketUpgrade,
+    room_id: Option<Path<RoomId>>,
+    params: HashMap<String, String>,
+    state: Arc<AppState>,
+    ping_measurement: bool,
+) -> impl IntoResponse {
     let room_id = room_id.map(|path| path.0).unwrap_or_default();
     let next = params
         .get("next")
@@ -44,6 +64,7 @@ pub async fn signaling_handler(
             state,
             RequestedRoom { id: room_id, next },
             requested_peer,
+            ping_measurement,
         )
     })
 }
@@ -76,8 +97,19 @@ async fn handle_ws(
     state: Arc<AppState>,
     requested_room: RequestedRoom,
     requested_peer: Option<uuid::Uuid>,
+    ping_measurement: bool,
 ) {
     let (ws_sender, mut ws_receiver) = websocket.split();
+    let signaling = if ping_measurement {
+        state.ping_measurement_signaling.clone()
+    } else {
+        state.signaling.clone()
+    };
+    let kind = if ping_measurement {
+        "PingMeasurement"
+    } else {
+        "Signaling"
+    };
     let sender = spawn_sender_task(ws_sender);
 
     let room_id: String = requested_room.clone().id.into();
@@ -85,7 +117,7 @@ async fn handle_ws(
     let peer_uuid: matchbox_protocol::PeerId = match requested_peer {
         Some(uuid) => uuid.into(),
         None => {
-            warn!("Signaling: no peer token for room {room_id}, refusing");
+            warn!("{kind}: no peer token for room {room_id}, refusing");
             return;
         }
     };
@@ -95,20 +127,22 @@ async fn handle_ws(
         .get_client_by_room_peer(room_id.clone(), peer_uuid.0.to_string())
         .await
     else {
-        warn!("Signaling: peer {peer_uuid:?} is not a member of room {room_id}, refusing");
+        warn!("{kind}: peer {peer_uuid:?} is not a member of room {room_id}, refusing");
         return;
     };
 
     let who = client.label();
-    info!("Signaling: {who} connected to room {room_id}");
+    info!("{kind}: {who} connected to room {room_id}");
 
-    state
-        .clients
-        .set_client_live_by_peer_id(peer_uuid.0.to_string(), true)
-        .await;
+    if !ping_measurement {
+        state
+            .clients
+            .set_client_live_by_peer_id(peer_uuid.0.to_string(), true)
+            .await;
+    }
 
     {
-        let mut add_peer_state = state.signaling.lock().await;
+        let mut add_peer_state = signaling.lock().await;
 
         let peers = add_peer_state.add_peer(Peer {
             uuid: peer_uuid,
@@ -138,7 +172,7 @@ async fn handle_ws(
         }
     }
 
-    let cloned_state_recv = state.clone();
+    let cloned_signaling_recv = signaling.clone();
     let cloned_state_loop = state.clone();
     let requested_room_clone = requested_room.clone();
     let who_recv = who.clone();
@@ -157,7 +191,7 @@ async fn handle_ws(
 
             match request {
                 PeerRequest::Signal { receiver, data } => {
-                    debug!("Signaling: {} sent a signal to {:?}", who_recv, receiver);
+                    debug!("{kind}: {} sent a signal to {:?}", who_recv, receiver);
 
                     let event = Message::Text(
                         JsonPeerEvent::Signal {
@@ -166,7 +200,7 @@ async fn handle_ws(
                         }
                         .to_string(),
                     );
-                    let state = cloned_state_recv.signaling.lock().await;
+                    let state = cloned_signaling_recv.lock().await;
                     if let Some(peer) = state.clients.get(&receiver) {
                         if let Err(e) = peer.sender.send(Ok(event)) {
                             error!("error sending: {:?}", e);
@@ -195,7 +229,7 @@ async fn handle_ws(
                 .await;
 
             if client.is_none() {
-                warn!("Signaling: {who_loop} not found in matchmaking, closing connection");
+                warn!("{kind}: {who_loop} not found in matchmaking, closing connection");
                 break;
             }
         }
@@ -203,28 +237,25 @@ async fn handle_ws(
 
     tokio::select! {
         _ = (&mut recv_task) => {
-            info!("Signaling: {} disconnected", who);
+            info!("{kind}: {} disconnected", who);
             loop_task.abort();
         }
         _ = (&mut loop_task) => {
-            info!("Signaling: {} left matchmaking, closing", who);
+            info!("{kind}: {} left matchmaking, closing", who);
             recv_task.abort();
         }
     }
 
-    state
-        .clone()
-        .clients
-        .set_client_live_by_peer_id(peer_uuid.0.to_string(), false)
-        .await;
+    if !ping_measurement {
+        state
+            .clone()
+            .clients
+            .set_client_live_by_peer_id(peer_uuid.0.to_string(), false)
+            .await;
+    }
 
     // Peer disconnected or otherwise ended communication.
-    state
-        .clone()
-        .signaling
-        .clone()
-        .remove_signaling_peer(peer_uuid)
-        .await;
+    signaling.clone().remove_signaling_peer(peer_uuid).await;
 
     state.clone().remove_all_empty_signaling_rooms().await;
 }

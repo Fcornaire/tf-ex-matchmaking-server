@@ -165,11 +165,7 @@ pub async fn handle_socket(
                             }
                         }
 
-                        if let Some(room_id) = cloned_state_recv.record_keep_alive_rtt(ip).await {
-                            if let Err(err) = cloned_state_recv.send_ping_update(room_id).await {
-                                error!("Error broadcasting ping update : {}", err);
-                            }
-                        }
+                        cloned_state_recv.record_keep_alive_rtt(ip).await;
                     }
                     ClientMsg::Identify { player_id, name } => {
                         let claimed = format!("{} ({})", name, player_id);

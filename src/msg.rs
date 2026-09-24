@@ -22,9 +22,6 @@ pub enum ServerMsg {
     LobbyUpdate {
         lobby: Lobby,
     },
-    PingUpdate {
-        pings: Vec<PlayerPing>,
-    },
     LeaveLobbyResponse {
         success: bool,
         message: String,
@@ -67,7 +64,6 @@ impl ServerMsg {
             Self::CreateLobbyResponse { .. } => "CreateLobbyResponse",
             Self::JoinLobbyResponse { .. } => "JoinLobbyResponse",
             Self::LobbyUpdate { .. } => "LobbyUpdate",
-            Self::PingUpdate { .. } => "PingUpdate",
             Self::LeaveLobbyResponse { .. } => "LeaveLobbyResponse",
             Self::LeaveLobbyForce {} => "LeaveLobbyForce",
             Self::RematchLobby {} => "RematchLobby",
@@ -90,13 +86,6 @@ pub struct SkinChunk {
     pub chunk_index: u32,
     pub chunk_count: u32,
     pub data: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "PascalCase")]
-pub struct PlayerPing {
-    pub room_peer_id: String,
-    pub ping: u32,
 }
 
 #[derive(Debug, Deserialize)]

@@ -29,10 +29,7 @@ impl AppState {
     }
 
     pub async fn send_msg_to_addrs(&self, addrs: &[String], msg: ServerMsg) {
-        let quiet = matches!(
-            msg,
-            ServerMsg::PingUpdate { .. } | ServerMsg::QuickPlayStatus { .. }
-        );
+        let quiet = matches!(msg, ServerMsg::QuickPlayStatus { .. });
 
         let targets: Vec<_> = {
             let connexions = self.connections.lock().await;
@@ -60,9 +57,7 @@ impl AppState {
     pub(super) async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
         let is_quiet_msg = matches!(
             msg,
-            ServerMsg::PingUpdate { .. }
-                | ServerMsg::QuickPlayStatus { .. }
-                | ServerMsg::SkinChunk { .. }
+            ServerMsg::QuickPlayStatus { .. } | ServerMsg::SkinChunk { .. }
         );
 
         let targets: Vec<_> = {
@@ -146,22 +141,6 @@ impl AppState {
         drop(lobbies);
 
         self.send_msg_to_lobby(lobby, ServerMsg::SkinChunk { chunk, from })
-            .await;
-
-        Ok(())
-    }
-
-    pub async fn send_ping_update(&self, room_id: String) -> Result<(), String> {
-        let lobbies = self.lobbies.lock().await;
-
-        let lobby = lobbies
-            .iter()
-            .find(|l| l.room_id() == room_id)
-            .ok_or("Lobby not found".to_string())?;
-
-        let pings = lobby.member_pings();
-
-        self.send_msg_to_lobby(lobby.clone(), ServerMsg::PingUpdate { pings })
             .await;
 
         Ok(())
