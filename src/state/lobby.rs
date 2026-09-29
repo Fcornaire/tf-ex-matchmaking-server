@@ -433,7 +433,7 @@ pub struct GameData {
     pub match_length: i32,
     pub variants: Vec<String>,
     pub seed: i32,
-    /// 0 for single match; 1, 3, 5 for the series length
+    /// 0 for single match; 1, 3, 5, 7 for the series length
     #[serde(default)]
     pub best_of: i32,
 }
@@ -459,6 +459,8 @@ pub struct Player {
     archer_mods: Vec<String>,
     #[serde(default)]
     custom_variants: Vec<String>,
+    #[serde(default)]
+    use_instant_replay: bool,
 }
 
 fn neutral_team() -> i32 {
@@ -480,6 +482,7 @@ impl Player {
             custom_archer_id: String::new(),
             archer_mods: Vec::new(),
             custom_variants: Vec::new(),
+            use_instant_replay: false,
         }
     }
 
