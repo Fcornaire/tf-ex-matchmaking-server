@@ -461,6 +461,10 @@ pub struct Player {
     custom_variants: Vec<String>,
     #[serde(default)]
     use_instant_replay: bool,
+    #[serde(default)]
+    have_modified_game_files: bool,
+    #[serde(default)]
+    platform: String,
 }
 
 fn neutral_team() -> i32 {
@@ -483,6 +487,8 @@ impl Player {
             archer_mods: Vec::new(),
             custom_variants: Vec::new(),
             use_instant_replay: false,
+            have_modified_game_files: false,
+            platform: String::new(),
         }
     }
 
