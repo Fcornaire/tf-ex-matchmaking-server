@@ -21,7 +21,7 @@ use axum_typed_websockets::Message;
 use metrics::{counter, gauge, histogram};
 use rand::Rng;
 use tokio::sync::{mpsc::Sender, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     msg::ServerMsg,
@@ -577,44 +577,80 @@ impl AppState {
         Ok(room_peer_id)
     }
 
-    pub async fn remove_from_lobby(&self, addr: SocketAddr) -> Result<String, String> {
+    pub async fn remove_from_lobby(&self, addr: SocketAddr) -> Result<Vec<String>, String> {
+        let room_ids = self.remove_from_lobbies(addr, None).await?;
+
+        if room_ids.is_empty() {
+            return Err("Lobby not found".to_string());
+        }
+
+        Ok(room_ids)
+    }
+
+    pub async fn leave_stale_lobbies(&self, addr: SocketAddr, keep_room_id: Option<&str>) {
+        let room_ids = match self.remove_from_lobbies(addr, keep_room_id).await {
+            Ok(room_ids) if !room_ids.is_empty() => room_ids,
+            _ => return,
+        };
+
+        warn!(
+            "{} was still seated in {:?}, removed",
+            self.client_label(addr).await,
+            room_ids
+        );
+
+        for room_id in room_ids {
+            if let Err(err) = self.send_lobby_update(room_id).await {
+                warn!("Could not send lobby update (lobby likely gone): {}", err);
+            }
+        }
+
+        self.purge_lobby_async().await;
+    }
+
+    async fn remove_from_lobbies(
+        &self,
+        addr: SocketAddr,
+        keep_room_id: Option<&str>,
+    ) -> Result<Vec<String>, String> {
         let mut lobbies = self.lobbies.lock().await;
-
-        let lobby = lobbies
-            .iter_mut()
-            .find(|lobby| {
-                lobby.players().iter().any(|p| p.addr() == addr.to_string())
-                    || lobby
-                        .spectators()
-                        .iter()
-                        .any(|p| p.addr() == addr.to_string())
-            })
-            .ok_or("Lobby not found".to_string())?;
-
         let mut clients = self.clients.lock().await;
 
-        let client_res = clients
+        let client: &mut Client = clients
             .iter_mut()
-            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr);
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
+            .ok_or("Client not found".to_string())?
+            .1;
 
-        if client_res.is_none() {
-            return Err("Client not found".to_string());
+        let member = addr.to_string();
+        let mut room_ids = vec![];
+
+        for lobby in lobbies
+            .iter_mut()
+            .filter(|l| l.has_member(&member) && Some(l.room_id().as_str()) != keep_room_id)
+        {
+            let series_running = lobby.series_in_progress();
+            lobby.remove_player_or_spectator(member.clone());
+            lobby.promote_host_if_needed();
+
+            if series_running && !lobby.series_in_progress() {
+                info!("Series in room {} aborted, a player left", lobby.room_id());
+                counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "aborted").increment(1);
+            }
+
+            room_ids.push(lobby.room_id());
         }
 
-        let client: &mut Client = client_res.unwrap().1;
+        let is_room_left = client
+            .room
+            .as_ref()
+            .is_some_and(|room| room_ids.contains(&room.id()));
 
-        client.room = None;
-
-        let series_running = lobby.series_in_progress();
-        lobby.remove_player_or_spectator(addr.to_string());
-        lobby.promote_host_if_needed();
-
-        if series_running && !lobby.series_in_progress() {
-            info!("Series in room {} aborted, a player left", lobby.room_id());
-            counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "aborted").increment(1);
+        if keep_room_id.is_none() || is_room_left {
+            client.room = None;
         }
 
-        Ok(lobby.room_id())
+        Ok(room_ids)
     }
 
     pub async fn start_lobby(&self, addr: SocketAddr) -> Result<String, String> {

@@ -190,6 +190,7 @@ pub async fn handle_socket(
                         info!("{} wants to create a lobby", who);
 
                         cloned_state_recv.exit_quick_play(ip).await;
+                        cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv.add_lobby(&mut lobby, ip).await {
                             Ok(final_lobby) => {
@@ -223,6 +224,9 @@ pub async fn handle_socket(
                         info!("{who} wants to join lobby {room_id}, is a player {is_player}");
 
                         cloned_state_recv.exit_quick_play(ip).await;
+                        cloned_state_recv
+                            .leave_stale_lobbies(ip, Some(&room_id))
+                            .await;
 
                         match cloned_state_recv
                             .join_lobby(room_id.clone(), ip, name, is_player)
@@ -271,6 +275,8 @@ pub async fn handle_socket(
                     }
                     ClientMsg::EnterQuickPlay { name, is_wide } => {
                         info!("{who} entered the quickplay queue (wide: {is_wide})");
+
+                        cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         let outcome = cloned_state_recv.enter_quick_play(ip, name, is_wide).await;
 
@@ -390,6 +396,7 @@ pub async fn handle_socket(
                         );
 
                         cloned_state_recv.exit_quick_play(ip).await;
+                        cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv
                             .join_private(code, ip, name, is_player)
@@ -500,14 +507,16 @@ pub async fn handle_socket(
                         info!("{} wants to leave lobby", who);
 
                         match cloned_state_recv.remove_from_lobby(ip).await {
-                            Ok(room_id) => {
-                                if let Err(err) =
-                                    cloned_state_recv.send_lobby_update(room_id.clone()).await
-                                {
-                                    warn!(
-                                        "Could not send lobby update (lobby likely gone): {}",
-                                        err
-                                    );
+                            Ok(room_ids) => {
+                                for room_id in room_ids {
+                                    if let Err(err) =
+                                        cloned_state_recv.send_lobby_update(room_id).await
+                                    {
+                                        warn!(
+                                            "Could not send lobby update (lobby likely gone): {}",
+                                            err
+                                        );
+                                    }
                                 }
 
                                 cloned_state_recv.purge_lobby_async().await;
@@ -713,28 +722,30 @@ pub async fn handle_socket(
 
     let mut clients = state.clone().clients.clone();
 
-    let client = clients.get_client(ip).await;
+    let has_room = clients
+        .get_client(ip)
+        .await
+        .is_some_and(|cli| cli.room.is_some());
 
-    if let Some(cli) = client {
-        if cli.room.is_some() {
+    match state.remove_from_lobby(ip).await {
+        Ok(room_ids) => {
             info!("{} was in a lobby", who);
 
-            match state.remove_from_lobby(ip).await {
-                Ok(room_id) => {
-                    if let Err(err) = state.send_lobby_update(room_id.clone()).await {
-                        warn!("Could not send lobby update (lobby likely gone): {}", err);
-                    }
-
-                    state.purge_lobby_async().await;
-                }
-                Err(err) => {
-                    warn!(
-                        "Error removing {} from lobby (might already be deleted): {}",
-                        who, err
-                    );
+            for room_id in room_ids {
+                if let Err(err) = state.send_lobby_update(room_id).await {
+                    warn!("Could not send lobby update (lobby likely gone): {}", err);
                 }
             }
+
+            state.purge_lobby_async().await;
         }
+        Err(err) if has_room => {
+            warn!(
+                "Error removing {} from lobby (might already be deleted): {}",
+                who, err
+            );
+        }
+        Err(_) => {}
     }
 
     clients.remove_client(ip).await;
