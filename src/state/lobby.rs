@@ -465,6 +465,8 @@ pub struct Player {
     have_modified_game_files: bool,
     #[serde(default)]
     platform: String,
+    #[serde(default)]
+    input_delay: Option<i32>,
 }
 
 fn neutral_team() -> i32 {
@@ -489,6 +491,7 @@ impl Player {
             use_instant_replay: false,
             have_modified_game_files: false,
             platform: String::new(),
+            input_delay: None,
         }
     }
 
