@@ -83,7 +83,7 @@ impl AppState {
             return;
         }
 
-        let (kicked, remaining, rematch, series_lobby) = {
+        let (remaining, rematch, series_lobby, defaulted) = {
             let mut lobbies = self.lobbies.lock().await;
 
             let Some(lobby) = lobbies.iter_mut().find(|lobby| lobby.room_id() == room_id) else {
@@ -102,24 +102,8 @@ impl AppState {
                 return;
             }
 
-            // nobody chose: the lobby is done
-            let mut kicked: Vec<String> = if votes.is_empty() {
-                lobby.players().iter().map(|p| p.addr()).collect()
-            } else {
-                undecided
-            };
-
-            if lobby.players().len().saturating_sub(kicked.len()) < 2 {
-                kicked = lobby.players().iter().map(|p| p.addr()).collect();
-            }
-
-            for addr in &kicked {
-                lobby.remove_player_or_spectator(addr.clone());
-            }
-
-            lobby.promote_host_if_needed();
-
-            let rematch = !votes.is_empty()
+            let rematch = undecided.is_empty()
+                && !votes.is_empty()
                 && votes
                     .iter()
                     .all(|vote| vote.choice == EndGameChoice::Rematch);
@@ -140,7 +124,7 @@ impl AppState {
                 }
             }
 
-            (kicked, lobby.clone(), rematch, series_lobby)
+            (lobby.clone(), rematch, series_lobby, undecided.len())
         };
 
         running.remove(&room_id);
@@ -150,28 +134,17 @@ impl AppState {
 
         if remaining.players().is_empty() {
             self.purge_lobby_async().await;
-        }
-
-        if !kicked.is_empty() {
-            info!(
-                "End game for room {} : dropping {} player(s) because no choice",
-                room_id,
-                kicked.len()
-            );
-
-            counter!(telemetry::END_GAME_OUTCOMES_TOTAL, "outcome" => "player_kicked")
-                .increment(kicked.len() as u64);
-
-            self.send_msg_to_addrs(&kicked, ServerMsg::LeaveLobbyForce {})
-                .await;
-        }
-
-        if remaining.players().is_empty() {
-            info!("End game action for room {} : nobody chose", room_id);
 
             counter!(telemetry::END_GAME_OUTCOMES_TOTAL, "outcome" => "lobby_closed").increment(1);
 
             return;
+        }
+
+        if defaulted > 0 {
+            info!(
+                "End game for room {} : {} player(s) -> archer select",
+                room_id, defaulted
+            );
         }
 
         let _ = self.send_lobby_update(room_id.clone()).await;
