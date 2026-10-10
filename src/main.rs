@@ -8,7 +8,7 @@ pub mod state;
 pub mod telemetry;
 pub mod ws_handler;
 
-use axum::{routing::get, Router};
+use axum::{middleware, routing::get, Router};
 
 use lazy_static::lazy_static;
 use tracing::Level;
@@ -25,6 +25,7 @@ use crate::{
     state::AppState,
     ws_handler::{
         matchmaking::matchmaking_handler,
+        refuse_browsers,
         signaling::{ping_measurement_handler, signaling_handler},
     },
 };
@@ -103,6 +104,7 @@ async fn main() {
         .route("/ws", get(matchmaking_handler))
         .route("/room/:room_id", get(signaling_handler))
         .route("/ping_measurement/:room_id", get(ping_measurement_handler))
+        .route_layer(middleware::from_fn(refuse_browsers))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),
