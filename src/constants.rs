@@ -3,6 +3,8 @@ pub const SECONDS_PER_DAY: i64 = 86_400;
 pub static PURGE_JOB_INTERVAL: u64 = 10;
 pub static KEEP_ALIVE_INTERVAL: u64 = 3;
 
+pub static KEEP_ALIVE_MAX_MISSED: u8 = 6;
+
 pub const MAX_PLAYERS: usize = 4;
 
 /// How long players get to pick an end match option before the undecided ones are dropped

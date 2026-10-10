@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::services::geoip::Location;
+use crate::{constants::KEEP_ALIVE_MAX_MISSED, services::geoip::Location};
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -57,7 +57,7 @@ impl Client {
     }
 
     pub fn is_alive(&self) -> bool {
-        self.alive_counter < 3
+        self.alive_counter < KEEP_ALIVE_MAX_MISSED
     }
 
     pub fn maybe_not_alive(&mut self) {
