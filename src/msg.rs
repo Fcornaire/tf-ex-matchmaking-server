@@ -53,6 +53,9 @@ pub enum ServerMsg {
         chunk: SkinChunk,
         from: String,
     },
+    KickedFromLobby {
+        reason: String,
+    },
 }
 
 impl ServerMsg {
@@ -73,6 +76,7 @@ impl ServerMsg {
             Self::QuickPlayMatchFound { .. } => "QuickPlayMatchFound",
             Self::SpectatorJoined { .. } => "SpectatorJoined",
             Self::SkinChunk { .. } => "SkinChunk",
+            Self::KickedFromLobby { .. } => "KickedFromLobby",
         }
     }
 }
@@ -141,5 +145,8 @@ pub enum ClientMsg {
     ExitQuickPlay {},
     SkinChunk {
         chunk: SkinChunk,
+    },
+    PeerMeasured {
+        room_peer_id: String,
     },
 }

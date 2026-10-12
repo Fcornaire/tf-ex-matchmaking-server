@@ -1,6 +1,7 @@
 pub mod broadcast;
 pub mod client;
 pub mod codes;
+pub mod connectivity;
 pub mod end_game;
 pub mod lobby;
 pub mod quickplay;
@@ -25,6 +26,7 @@ use tracing::{info, warn};
 
 use crate::{
     msg::ServerMsg,
+    relay::{DropReason, Relay},
     services::{
         geoip::{GeoipClient, Location},
         storage::{RatingConfig, Storage},
@@ -67,6 +69,7 @@ pub struct AppState {
     storage: Option<Arc<Storage>>,
     match_reports: Arc<Mutex<HashMap<String, rating::PendingReports>>>,
     rating_config: RatingConfig,
+    relay: Option<Arc<Relay>>,
 }
 
 impl AppState {
@@ -89,7 +92,17 @@ impl AppState {
             storage,
             match_reports: Arc::new(Mutex::new(HashMap::new())),
             rating_config: RatingConfig::from_env(),
+            relay: None,
         }
+    }
+
+    pub fn with_relay(mut self, relay: Option<Arc<Relay>>) -> Self {
+        self.relay = relay;
+        self
+    }
+
+    pub fn relay(&self) -> Option<Arc<Relay>> {
+        self.relay.clone()
     }
 
     #[allow(dead_code)]
@@ -175,6 +188,26 @@ impl AppState {
         telemetry::publish_clients_by_country(clients_by_country);
         gauge!(telemetry::SIGNALING_ROOMS).set(signaling_rooms as f64);
         gauge!(telemetry::SIGNALING_PEERS).set(signaling_peers as f64);
+
+        if let Some(relay) = &self.relay {
+            let stats = relay.stats();
+
+            gauge!(telemetry::RELAY_ROOMS).set(stats.rooms as f64);
+            gauge!(telemetry::RELAY_MEMBERS).set(stats.members as f64);
+            counter!(telemetry::RELAY_DATAGRAMS_TOTAL, "outcome" => "received")
+                .absolute(stats.received);
+            counter!(telemetry::RELAY_DATAGRAMS_TOTAL, "outcome" => "forwarded")
+                .absolute(stats.forwarded);
+
+            for reason in DropReason::ALL {
+                counter!(
+                    telemetry::RELAY_DATAGRAMS_TOTAL,
+                    "outcome" => "dropped",
+                    "reason" => reason.label()
+                )
+                .absolute(stats.dropped(reason));
+            }
+        }
 
         let pending_reports = self.match_reports.lock().await.len();
         gauge!(telemetry::MATCH_REPORTS_PENDING).set(pending_reports as f64);
@@ -674,6 +707,10 @@ impl AppState {
             return Err("Lobby already started".to_string());
         }
 
+        if lobby.is_checking_connections() {
+            return Err("Connections are still being checked".to_string());
+        }
+
         let series_started = if lobby.is_series_lobby() {
             if lobby.series_in_progress() {
                 return Err("Series already running".to_string());
@@ -993,6 +1030,32 @@ mod tests {
             .unwrap()
             .set_in_game(true);
         assert_eq!(state.get_lobbies(host).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn match_players_keep_who_left_until_the_match_ends() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let state = state_with_clients(&[host, joiner]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        state
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap();
+
+        let mut lobbies = state.lobbies.lock().await;
+        let lobby = &mut lobbies[0];
+
+        lobby.set_in_game(true);
+        lobby.remove_player_or_spectator(joiner.to_string());
+
+        assert_eq!(lobby.players().len(), 1);
+        assert_eq!(lobby.match_players().len(), 2);
+
+        lobby.set_in_game(false);
+        assert!(lobby.match_players().is_empty());
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use rand::Rng;
@@ -7,6 +7,7 @@ use tracing::error;
 
 use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
 use crate::services::geoip::Location;
+use crate::state::connectivity::{peers_of, Connectivity, ConnectivityUpdate, PeerPair};
 use crate::state::series::Series;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,6 +69,8 @@ pub struct Lobby {
     end_game_choice: Option<Vec<EndGameVote>>,
     #[serde(default)]
     in_game: bool,
+    #[serde(default)]
+    match_players: Vec<Player>,
     mods: Vec<Mod>,
     #[serde(default)]
     kind: LobbyKind,
@@ -75,6 +78,10 @@ pub struct Lobby {
     join_code: Option<String>,
     #[serde(default)]
     series: Option<Series>,
+    #[serde(default)]
+    relayed_pairs: Vec<PeerPair>,
+    #[serde(default)]
+    is_checking_connections: bool,
     #[serde(skip)]
     origin: Option<Location>,
     #[serde(skip)]
@@ -83,6 +90,12 @@ pub struct Lobby {
     all_ready_since: Option<Instant>,
     #[serde(skip)]
     in_game_since: Option<Instant>,
+    #[serde(skip)]
+    connectivity: Connectivity,
+    #[serde(skip)]
+    connection_switched_at: Option<Instant>,
+    #[serde(skip)]
+    is_connectivity_settled: bool,
 }
 
 impl Lobby {
@@ -102,6 +115,12 @@ impl Lobby {
         self.spectators.clone()
     }
 
+    pub fn has_spectator(&self, room_peer_id: &str) -> bool {
+        self.spectators
+            .iter()
+            .any(|spectator| spectator.room_peer_id == room_peer_id)
+    }
+
     pub fn room_id(&self) -> String {
         self.room_id.clone()
     }
@@ -114,6 +133,10 @@ impl Lobby {
         self.in_game
     }
 
+    pub fn match_players(&self) -> &[Player] {
+        &self.match_players
+    }
+
     pub fn kind(&self) -> LobbyKind {
         self.kind
     }
@@ -124,6 +147,133 @@ impl Lobby {
 
     pub fn origin(&self) -> Option<Location> {
         self.origin.clone()
+    }
+
+    pub fn relayed_pairs(&self) -> &[PeerPair] {
+        &self.relayed_pairs
+    }
+
+    pub fn is_checking_connections(&self) -> bool {
+        self.connectivity
+            .is_checking(&self.player_peers(), &peers_of(&self.relayed_pairs))
+    }
+
+    pub fn is_connectivity_settled(&self) -> bool {
+        self.is_connectivity_settled
+    }
+
+    pub fn record_measured(&mut self, addr: &str, peer: &str) -> bool {
+        let Some(own) = self
+            .players
+            .iter()
+            .find(|p| p.addr == addr)
+            .map(|p| p.room_peer_id.clone())
+        else {
+            return false;
+        };
+
+        if own == peer || !self.players.iter().any(|p| p.room_peer_id == peer) {
+            return false;
+        }
+
+        self.connectivity.record_reached(&own, peer);
+
+        self.refresh_checking_connections()
+    }
+
+    pub fn update_connectivity(
+        &mut self,
+        is_relay_available: bool,
+        relay_confirmed: &HashSet<String>,
+    ) -> ConnectivityUpdate {
+        let now = Instant::now();
+        let peers = self.player_peers();
+
+        let failed_pairs = self
+            .connectivity
+            .update_direct(&peers, now)
+            .into_iter()
+            .filter_map(|(a, b)| Some((self.addr_of_peer(&a)?, self.addr_of_peer(&b)?)))
+            .collect();
+
+        let relayed_pairs = if is_relay_available {
+            self.connectivity.failed_pairs(&peers)
+        } else {
+            vec![]
+        };
+
+        let relay_peers = peers_of(&relayed_pairs);
+
+        let unreachable_peers = if relay_peers.is_empty() {
+            self.connectivity.clear_relay();
+            vec![]
+        } else {
+            self.connectivity
+                .update_relay(&relay_peers, relay_confirmed, now);
+            self.connectivity.relay_unreachable()
+        };
+
+        let relayed_pairs: Vec<PeerPair> = relayed_pairs
+            .into_iter()
+            .filter(|(a, b)| !unreachable_peers.contains(a) && !unreachable_peers.contains(b))
+            .collect();
+
+        let unreachable: Vec<String> = unreachable_peers
+            .iter()
+            .filter_map(|peer| self.addr_of_peer(peer))
+            .collect();
+
+        for addr in &unreachable {
+            self.remove_player_or_spectator(addr.clone());
+        }
+
+        if !unreachable.is_empty() {
+            self.promote_host_if_needed();
+        }
+
+        let has_relayed_pairs_changed = relayed_pairs != self.relayed_pairs;
+        self.relayed_pairs = relayed_pairs;
+
+        if has_relayed_pairs_changed {
+            self.connection_switched_at = Some(now);
+        }
+
+        let update = ConnectivityUpdate {
+            failed_pairs,
+            unreachable,
+            has_relayed_pairs_changed,
+            has_checking_changed: self.refresh_checking_connections(),
+            is_relay_down: self.connectivity.should_report_relay_down(),
+        };
+
+        self.is_connectivity_settled = self
+            .connectivity
+            .is_settled(&self.player_peers(), &peers_of(&self.relayed_pairs));
+
+        update
+    }
+
+    fn refresh_checking_connections(&mut self) -> bool {
+        let is_checking = self.is_checking_connections();
+        let has_changed = is_checking != self.is_checking_connections;
+
+        self.is_checking_connections = is_checking;
+
+        has_changed
+    }
+
+    fn player_peers(&self) -> Vec<String> {
+        self.players
+            .iter()
+            .map(|p| p.room_peer_id.clone())
+            .collect()
+    }
+
+    fn addr_of_peer(&self, peer: &str) -> Option<String> {
+        self.players
+            .iter()
+            .find(|p| p.room_peer_id == peer)
+            .map(|p| p.addr.clone())
     }
 
     pub fn series(&self) -> Option<&Series> {
@@ -213,6 +363,12 @@ impl Lobby {
             .unwrap_or(u64::MAX)
     }
 
+    pub fn secs_since_connection_switch(&self) -> u64 {
+        self.connection_switched_at
+            .map(|at| at.elapsed().as_secs())
+            .unwrap_or(u64::MAX)
+    }
+
     pub fn secs_since_all_ready(&mut self) -> Option<u64> {
         if self.players.is_empty() || self.players.iter().any(|p| !p.ready) {
             self.all_ready_since = None;
@@ -240,6 +396,11 @@ impl Lobby {
     pub fn set_in_game(&mut self, in_game: bool) {
         self.in_game_since = in_game.then(Instant::now);
         self.in_game = in_game;
+        self.match_players = if in_game {
+            self.players.clone()
+        } else {
+            vec![]
+        };
     }
 
     pub fn match_duration_secs(&self) -> Option<f64> {
@@ -306,6 +467,8 @@ impl Lobby {
         player.seat = self.first_free_seat();
         self.players.push(player);
         self.membership_changed_at = Some(Instant::now());
+        self.is_connectivity_settled = false;
+        self.refresh_checking_connections();
     }
 
     fn first_free_seat(&self) -> usize {
@@ -326,6 +489,8 @@ impl Lobby {
 
         if self.players.len() != seated_before {
             self.abort_series("PLAYER LEFT");
+            self.is_connectivity_settled = false;
+            self.refresh_checking_connections();
         }
     }
 
@@ -613,14 +778,20 @@ impl LobbyBuilder {
             spectators: vec![],
             end_game_choice: None,
             in_game: false,
+            match_players: vec![],
             mods: self.mods.unwrap_or_default(),
             kind: self.kind.unwrap_or_default(),
             join_code: self.join_code,
             series: None,
+            relayed_pairs: vec![],
+            is_checking_connections: false,
             origin: self.origin,
             membership_changed_at: None,
             all_ready_since: None,
             in_game_since: None,
+            connectivity: Connectivity::default(),
+            connection_switched_at: None,
+            is_connectivity_settled: false,
         }
     }
 }

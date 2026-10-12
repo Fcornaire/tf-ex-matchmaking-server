@@ -3,6 +3,7 @@ pub mod constants;
 pub mod extensions;
 pub mod jobs;
 pub mod msg;
+pub mod relay;
 pub mod services;
 pub mod state;
 pub mod telemetry;
@@ -26,6 +27,7 @@ use crate::{
     ws_handler::{
         matchmaking::matchmaking_handler,
         refuse_browsers,
+        relay::{relay_ping_measurement_handler, relay_room_handler},
         signaling::{ping_measurement_handler, signaling_handler},
     },
 };
@@ -84,8 +86,24 @@ async fn main() {
     };
 
 
+    let relay_port = std::env::var("RELAY_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(4537);
+
+    let relay = match relay::Relay::bind(relay_port).await {
+        Ok(relay) => {
+            tracing::info!("Relay listening on udp {}", relay.udp_port());
+            Some(relay)
+        }
+        Err(err) => {
+            tracing::error!("Relay DISABLED, failed to bind udp {}: {}", relay_port, err);
+            None
+        }
+    };
+
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-    let state = Arc::new(AppState::new_with_storage(storage));
+    let state = Arc::new(AppState::new_with_storage(storage).with_relay(relay));
 
     let metrics_port = std::env::var("METRICS_PORT")
         .ok()
@@ -104,6 +122,11 @@ async fn main() {
         .route("/ws", get(matchmaking_handler))
         .route("/room/:room_id", get(signaling_handler))
         .route("/ping_measurement/:room_id", get(ping_measurement_handler))
+        .route("/relay/room/:room_id", get(relay_room_handler))
+        .route(
+            "/relay/ping_measurement/:room_id",
+            get(relay_ping_measurement_handler),
+        )
         .route_layer(middleware::from_fn(refuse_browsers))
         .layer(
             TraceLayer::new_for_http()

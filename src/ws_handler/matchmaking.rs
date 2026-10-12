@@ -624,6 +624,11 @@ pub async fn handle_socket(
                             }
                         }
                     }
+                    ClientMsg::PeerMeasured { room_peer_id } => {
+                        cloned_state_recv
+                            .record_peer_measured(ip, room_peer_id)
+                            .await;
+                    }
                     ClientMsg::SkinChunk { chunk } => {
                         if let Err(err) = cloned_state_recv.relay_skin_chunk(ip, chunk).await {
                             warn!("Skin chunk from {} rejected : {}", who, err);

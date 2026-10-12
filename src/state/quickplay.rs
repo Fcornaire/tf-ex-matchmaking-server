@@ -69,9 +69,11 @@ pub fn should_auto_start(
     is_full: bool,
     secs_since_all_ready: u64,
     secs_since_membership_change: u64,
+    secs_since_connection_switch: u64,
     grace_secs: u64,
 ) -> bool {
     player_count >= 2
+        && secs_since_connection_switch >= grace_secs
         && (is_full
             || (secs_since_all_ready >= grace_secs && secs_since_membership_change >= grace_secs))
 }
@@ -337,7 +339,10 @@ impl AppState {
             let mut lobbies = self.lobbies.lock().await;
 
             for lobby in lobbies.iter_mut() {
-                if lobby.kind() != LobbyKind::QuickPlay || lobby.in_game() {
+                if lobby.kind() != LobbyKind::QuickPlay
+                    || lobby.in_game()
+                    || lobby.is_checking_connections()
+                {
                     continue;
                 }
 
@@ -350,6 +355,7 @@ impl AppState {
                     lobby.is_full(),
                     secs_since_all_ready,
                     lobby.secs_since_membership_change(),
+                    lobby.secs_since_connection_switch(),
                     QUICK_PLAY_AUTO_START_GRACE_SECS,
                 ) {
                     continue;
@@ -409,11 +415,18 @@ mod tests {
 
     #[test]
     fn auto_start_needs_two_players_and_full_or_both_graces() {
-        assert!(!should_auto_start(1, false, 100, 100, 5));
-        assert!(!should_auto_start(2, false, 2, 100, 5));
-        assert!(!should_auto_start(2, false, 100, 2, 5));
-        assert!(should_auto_start(2, false, 5, 5, 5));
-        assert!(should_auto_start(4, true, 0, 0, 5));
+        assert!(!should_auto_start(1, false, 100, 100, u64::MAX, 5));
+        assert!(!should_auto_start(2, false, 2, 100, u64::MAX, 5));
+        assert!(!should_auto_start(2, false, 100, 2, u64::MAX, 5));
+        assert!(should_auto_start(2, false, 5, 5, u64::MAX, 5));
+        assert!(should_auto_start(4, true, 0, 0, u64::MAX, 5));
+    }
+
+    #[test]
+    fn auto_start_waits_out_a_connection_switch_even_when_full() {
+        assert!(!should_auto_start(2, false, 100, 100, 2, 5));
+        assert!(!should_auto_start(4, true, 100, 100, 2, 5));
+        assert!(should_auto_start(4, true, 100, 100, 5, 5));
     }
 
     #[tokio::test]
@@ -599,12 +612,23 @@ mod tests {
         state.quick_play_tick().await;
         assert!(!state.lobbies.lock().await.first().unwrap().in_game());
 
-        {
+        let second_peer = {
             let mut lobbies = state.lobbies.lock().await;
             let lobby = lobbies.first_mut().unwrap();
             lobby.backdate_ready(QUICK_PLAY_AUTO_START_GRACE_SECS);
-        }
 
+            lobby
+                .players()
+                .iter()
+                .find(|p| p.addr() == second.to_string())
+                .unwrap()
+                .room_peer_id()
+        };
+
+        state.quick_play_tick().await;
+        assert!(!state.lobbies.lock().await.first().unwrap().in_game());
+
+        state.record_peer_measured(first, second_peer).await;
         state.quick_play_tick().await;
 
         let lobbies = state.lobbies.lock().await;

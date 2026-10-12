@@ -305,7 +305,7 @@ impl AppState {
                 return;
             };
 
-            if lobby.in_game() || !lobby.all_players_ready() {
+            if lobby.in_game() || !lobby.all_players_ready() || lobby.is_checking_connections() {
                 return;
             }
 

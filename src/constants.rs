@@ -19,6 +19,14 @@ pub static QUICK_PLAY_AUTO_START_GRACE_SECS: u64 = 5;
 
 pub static SERIES_READY_SECONDS: u64 = 60;
 
+pub static CONNECTIVITY_TICK_INTERVAL: u64 = 1;
+
+/// How long a pair of players or a player and the relay gets to connect before it counts as failed
+pub static CONNECTION_CHECK_SECS: u64 = 10;
+
+/// Spectators per lobby allowed to watch through the relay
+pub const MAX_RELAYED_SPECTATORS: usize = 2;
+
 /// Vanilla versus towers eligible in a series
 pub const SERIES_TOWER_COUNT: i32 = 16;
 

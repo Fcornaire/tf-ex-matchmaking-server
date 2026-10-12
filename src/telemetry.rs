@@ -25,6 +25,9 @@ pub const SPECTATORS: &str = "tfex_spectators";
 pub const QUICKPLAY_QUEUE_DEPTH: &str = "tfex_quickplay_queue_depth";
 pub const SIGNALING_ROOMS: &str = "tfex_signaling_rooms";
 pub const SIGNALING_PEERS: &str = "tfex_signaling_peers";
+pub const RELAY_ROOMS: &str = "tfex_relay_rooms";
+pub const RELAY_MEMBERS: &str = "tfex_relay_members";
+pub const RELAY_DATAGRAMS_TOTAL: &str = "tfex_relay_datagrams_total";
 
 pub const CONNECTIONS_TOTAL: &str = "tfex_connections_total";
 pub const DISCONNECTS_TOTAL: &str = "tfex_disconnects_total";
@@ -127,6 +130,12 @@ fn describe() {
     );
     describe_gauge!(SIGNALING_ROOMS, "Open WebRTC signaling rooms");
     describe_gauge!(SIGNALING_PEERS, "Peers connected to the signaling endpoint");
+    describe_gauge!(RELAY_ROOMS, "Rooms with members on the relay");
+    describe_gauge!(RELAY_MEMBERS, "Peers registered on the relay");
+    describe_counter!(
+        RELAY_DATAGRAMS_TOTAL,
+        "Relay datagrams, by outcome (received, forwarded, dropped) and drop reason"
+    );
     describe_gauge!(
         PLAYER_RATING,
         "Hidden rating of the current top players, by player_id and name"

@@ -37,6 +37,15 @@ Everything is configured through environment variables. All of them are optional
 | `METRICS_PORT`    | `4738`    | Prometheus metrics port (keep it private)             |
 | `GEOIP_CLIENT_ID` | _(unset)_ | MaxMind account ID — enables GeoIP                    |
 | `GEOIP_API_KEY`   | _(unset)_ | MaxMind license key — enables GeoIP                   |
+| `RELAY_PORT`      | `4537`    | UDP port of the relay                                 |
+
+## Relay (optional)
+
+Players normally connect to each other directly (WebRTC). Some pairs can't, behind strict NATs (or weird network stuff). A lobby on the relay sends its game traffic through the server instead
+
+Before any match, every pair of players must measure its ping (10 s each)
+
+Spectators try both paths and keep the relay only when they can't reach the host directly
 
 ## GeoIP (optional — but recommended if you want quickplay by region)
 
@@ -76,11 +85,13 @@ All metrics are prefixed `tfex_`.
 
 ## Endpoints
 
-| Endpoint             | Port           | Purpose                                                                |
-| -------------------- | -------------- | ---------------------------------------------------------------------- |
-| `GET /ws`            | `PORT`         | Matchmaking websocket (lobby browser, quickplay, chat with the server) |
-| `GET /room/:room_id` | `PORT`         | WebRTC signaling room for one lobby                                    |
-| `GET /metrics`       | `METRICS_PORT` | Prometheus metrics                                                     |
+| Endpoint                               | Port           | Purpose                                                                |
+| -------------------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `GET /ws`                              | `PORT`         | Matchmaking websocket (lobby browser, quickplay, chat with the server) |
+| `GET /room/:room_id`                   | `PORT`         | WebRTC signaling room for one lobby                                    |
+| `GET /relay/room/:room_id`             | `PORT`         | Relay connection for one lobby (data over UDP `RELAY_PORT`)            |
+| `GET /relay/ping_measurement/:room_id` | `PORT`         | Lobby ping measurement through the relay                               |
+| `GET /metrics`                         | `METRICS_PORT` | Prometheus metrics                                                     |
 
 ## Running behind a reverse proxy (TLS)
 

@@ -1,4 +1,5 @@
 pub mod matchmaking;
+pub mod relay;
 pub mod signaling;
 
 use axum::{
