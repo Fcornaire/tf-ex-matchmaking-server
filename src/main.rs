@@ -4,12 +4,18 @@ pub mod extensions;
 pub mod jobs;
 pub mod msg;
 pub mod relay;
+pub mod reports;
 pub mod services;
 pub mod state;
 pub mod telemetry;
 pub mod ws_handler;
 
-use axum::{middleware, routing::get, Router};
+use axum::{
+    extract::DefaultBodyLimit,
+    middleware,
+    routing::{get, post},
+    Router,
+};
 
 use lazy_static::lazy_static;
 use tracing::Level;
@@ -23,6 +29,8 @@ use tower_http::{
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
+    constants::{DEFAULT_REPORTS_MAX_MB, MAX_REPORT_BYTES},
+    reports::report_handler,
     state::AppState,
     ws_handler::{
         matchmaking::matchmaking_handler,
@@ -102,8 +110,30 @@ async fn main() {
         }
     };
 
+    let reports = std::env::var("REPORTS_DIR").ok().and_then(|dir| {
+        let max_mb = std::env::var("REPORTS_MAX_MB")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REPORTS_MAX_MB);
+
+        match reports::Reports::open(&dir, max_mb * 1024 * 1024) {
+            Ok(reports) => {
+                tracing::info!("Reports enabled, saved to {} (max {} MB)", dir, max_mb);
+                Some(Arc::new(reports))
+            }
+            Err(err) => {
+                tracing::error!("Reports DISABLED, cannot write to {}: {}", dir, err);
+                None
+            }
+        }
+    });
+
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-    let state = Arc::new(AppState::new_with_storage(storage).with_relay(relay));
+    let state = Arc::new(
+        AppState::new_with_storage(storage)
+            .with_relay(relay)
+            .with_reports(reports),
+    );
 
     let metrics_port = std::env::var("METRICS_PORT")
         .ok()
@@ -126,6 +156,10 @@ async fn main() {
         .route(
             "/relay/ping_measurement/:room_id",
             get(relay_ping_measurement_handler),
+        )
+        .route(
+            "/report",
+            post(report_handler).layer(DefaultBodyLimit::max(MAX_REPORT_BYTES)),
         )
         .route_layer(middleware::from_fn(refuse_browsers))
         .layer(

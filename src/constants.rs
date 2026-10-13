@@ -34,3 +34,11 @@ pub const SERIES_TOWER_COUNT: i32 = 16;
 pub const TEAM_DEATHMATCH_MODE: i32 = 5;
 
 pub const SERIES_TEAM_SIZE: usize = 2;
+
+pub const REPORTS_RETENTION_SECS: u64 = 3 * SECONDS_PER_DAY as u64;
+
+pub const DEFAULT_REPORTS_MAX_MB: u64 = 750;
+
+pub const MAX_REPORT_BYTES: usize = 32 * 1024 * 1024;
+
+pub static REPORTS_PURGE_INTERVAL: u64 = 3600;

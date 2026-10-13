@@ -38,6 +38,8 @@ Everything is configured through environment variables. All of them are optional
 | `GEOIP_CLIENT_ID` | _(unset)_ | MaxMind account ID — enables GeoIP                    |
 | `GEOIP_API_KEY`   | _(unset)_ | MaxMind license key — enables GeoIP                   |
 | `RELAY_PORT`      | `4537`    | UDP port of the relay                                 |
+| `REPORTS_DIR`     | _(unset)_ | Folder for crash/desync reports, unset to disable     |
+| `REPORTS_MAX_MB`  | `750`     | Size cap of the reports folder                        |
 
 ## Relay (optional)
 
@@ -91,6 +93,7 @@ All metrics are prefixed `tfex_`.
 | `GET /room/:room_id`                   | `PORT`         | WebRTC signaling room for one lobby                                    |
 | `GET /relay/room/:room_id`             | `PORT`         | Relay connection for one lobby (data over UDP `RELAY_PORT`)            |
 | `GET /relay/ping_measurement/:room_id` | `PORT`         | Lobby ping measurement through the relay                               |
+| `POST /report`                         | `PORT`         | Crash/desync report upload                                             |
 | `GET /metrics`                         | `METRICS_PORT` | Prometheus metrics                                                     |
 
 ## Running behind a reverse proxy (TLS)

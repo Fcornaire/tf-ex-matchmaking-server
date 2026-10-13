@@ -27,6 +27,7 @@ use tracing::{info, warn};
 use crate::{
     msg::ServerMsg,
     relay::{DropReason, Relay},
+    reports::Reports,
     services::{
         geoip::{GeoipClient, Location},
         storage::{RatingConfig, Storage},
@@ -70,6 +71,7 @@ pub struct AppState {
     match_reports: Arc<Mutex<HashMap<String, rating::PendingReports>>>,
     rating_config: RatingConfig,
     relay: Option<Arc<Relay>>,
+    reports: Option<Arc<Reports>>,
 }
 
 impl AppState {
@@ -93,6 +95,7 @@ impl AppState {
             match_reports: Arc::new(Mutex::new(HashMap::new())),
             rating_config: RatingConfig::from_env(),
             relay: None,
+            reports: None,
         }
     }
 
@@ -103,6 +106,15 @@ impl AppState {
 
     pub fn relay(&self) -> Option<Arc<Relay>> {
         self.relay.clone()
+    }
+
+    pub fn with_reports(mut self, reports: Option<Arc<Reports>>) -> Self {
+        self.reports = reports;
+        self
+    }
+
+    pub fn reports(&self) -> Option<Arc<Reports>> {
+        self.reports.clone()
     }
 
     #[allow(dead_code)]
@@ -455,6 +467,7 @@ impl AppState {
             .mods(lobby.mods())
             .kind(lobby.kind())
             .join_code(join_code)
+            .is_report_enabled(self.reports.is_some())
             .build();
 
         lobbies.push(final_lobby.clone());

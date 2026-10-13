@@ -209,6 +209,7 @@ impl AppState {
                 .kind(LobbyKind::QuickPlay)
                 .origin(Some(partner.location.clone()))
                 .mods(mods)
+                .is_report_enabled(self.reports.is_some())
                 .build();
 
             lobby.add_player(Player::new(

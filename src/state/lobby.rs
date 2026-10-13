@@ -82,6 +82,8 @@ pub struct Lobby {
     relayed_pairs: Vec<PeerPair>,
     #[serde(default)]
     is_checking_connections: bool,
+    #[serde(default)]
+    is_report_enabled: bool,
     #[serde(skip)]
     origin: Option<Location>,
     #[serde(skip)]
@@ -716,6 +718,7 @@ pub struct LobbyBuilder {
     kind: Option<LobbyKind>,
     join_code: Option<String>,
     origin: Option<Location>,
+    is_report_enabled: bool,
 }
 
 impl LobbyBuilder {
@@ -768,6 +771,11 @@ impl LobbyBuilder {
         self
     }
 
+    pub fn is_report_enabled(mut self, is_report_enabled: bool) -> Self {
+        self.is_report_enabled = is_report_enabled;
+        self
+    }
+
     pub fn build(self) -> Lobby {
         Lobby {
             name: self.name.expect("lobby name is required"),
@@ -785,6 +793,7 @@ impl LobbyBuilder {
             series: None,
             relayed_pairs: vec![],
             is_checking_connections: false,
+            is_report_enabled: self.is_report_enabled,
             origin: self.origin,
             membership_changed_at: None,
             all_ready_since: None,
