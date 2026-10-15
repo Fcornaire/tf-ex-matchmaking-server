@@ -151,7 +151,7 @@ enum Route {
 }
 
 pub struct Relay {
-    socket: UdpSocket,
+    sockets: Vec<UdpSocket>,
     udp_port: u16,
     tables: Mutex<Tables>,
     counters: Counters,
@@ -165,19 +165,55 @@ impl fmt::Debug for Relay {
     }
 }
 
+fn receive_loop_count() -> usize {
+    if cfg!(unix) {
+        std::thread::available_parallelism().map_or(1, |count| count.get())
+    } else {
+        1
+    }
+}
+
+fn bind_socket(udp_port: u16) -> io::Result<UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+
+    socket.set_nonblocking(true)?;
+    socket.bind(&SocketAddr::from(([0, 0, 0, 0], udp_port)).into())?;
+
+    UdpSocket::from_std(socket.into())
+}
+
 impl Relay {
     pub async fn bind(udp_port: u16) -> io::Result<Arc<Self>> {
-        let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], udp_port))).await?;
-        let udp_port = socket.local_addr()?.port();
+        let first = bind_socket(udp_port)?;
+        let udp_port = first.local_addr()?.port();
+        let mut sockets = vec![first];
+
+        for _ in 1..receive_loop_count() {
+            sockets.push(bind_socket(udp_port)?);
+        }
 
         let relay = Arc::new(Self {
-            socket,
+            sockets,
             udp_port,
             tables: Mutex::new(Tables::default()),
             counters: Counters::default(),
         });
 
-        tokio::spawn(relay.clone().receive_loop());
+        for index in 0..relay.sockets.len() {
+            tokio::spawn(relay.clone().receive_loop(index));
+        }
+
+        info!(
+            "Relay: {} receive loop(s) on UDP port {udp_port}",
+            relay.sockets.len()
+        );
 
         Ok(relay)
     }
@@ -306,12 +342,13 @@ impl Relay {
         }
     }
 
-    async fn receive_loop(self: Arc<Self>) {
+    async fn receive_loop(self: Arc<Self>, index: usize) {
+        let socket = &self.sockets[index];
         let mut buffer = vec![0u8; RECEIVE_BUFFER_SIZE];
         let mut out = Vec::with_capacity(RECEIVE_BUFFER_SIZE);
 
         loop {
-            let (len, from) = match self.socket.recv_from(&mut buffer).await {
+            let (len, from) = match socket.recv_from(&mut buffer).await {
                 Ok(received) => received,
                 Err(err) => {
                     warn!("Relay: receive failed: {err}");
@@ -322,7 +359,7 @@ impl Relay {
             self.counters.received.fetch_add(1, Ordering::Relaxed);
 
             let counter = match self.route(&buffer[..len], from, &mut out) {
-                Route::Forward(to) => match self.socket.send_to(&out, to).await {
+                Route::Forward(to) => match socket.send_to(&out, to).await {
                     Ok(_) => Some(&self.counters.forwarded),
                     Err(_) => Some(self.counters.dropped(DropReason::SendFailed)),
                 },
