@@ -3,7 +3,8 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    response::IntoResponse,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     Error,
 };
 use futures::{stream::SplitSink, StreamExt};
@@ -12,6 +13,8 @@ use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, warn};
+
+use super::is_room_peer_known;
 
 use crate::{
     constants::KEEP_ALIVE_INTERVAL,
@@ -28,8 +31,12 @@ pub async fn signaling_handler(
     room_id: Option<Path<RoomId>>,
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    upgrade(ws, room_id, params, state, false)
+) -> Response {
+    if !is_room_peer_known(&state, &requested_room_id(&room_id), &params).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    upgrade(ws, room_id, params, state, false).into_response()
 }
 
 /// Lobby ping measurement
@@ -38,8 +45,19 @@ pub async fn ping_measurement_handler(
     room_id: Option<Path<RoomId>>,
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    upgrade(ws, room_id, params, state, true)
+) -> Response {
+    if !is_room_peer_known(&state, &requested_room_id(&room_id), &params).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    upgrade(ws, room_id, params, state, true).into_response()
+}
+
+fn requested_room_id(room_id: &Option<Path<RoomId>>) -> String {
+    room_id
+        .as_ref()
+        .map(|path| String::from(path.0.clone()))
+        .unwrap_or_default()
 }
 
 fn upgrade(

@@ -42,3 +42,21 @@ pub const DEFAULT_REPORTS_MAX_MB: u64 = 750;
 pub const MAX_REPORT_BYTES: usize = 32 * 1024 * 1024;
 
 pub static REPORTS_PURGE_INTERVAL: u64 = 3600;
+
+pub const DEFAULT_RELAY_PORT: u16 = 4537;
+
+pub const DEFAULT_RELAY_PORT_CHECK_HOST: &str = "host.docker.internal";
+
+pub const RELAY_PORT_CHECK_TIMEOUT_MS: u64 = 3000;
+
+pub const RELAY_PORT_CHECK_RESEND_MS: u64 = 500;
+
+pub static DRAIN_TICK_SECS: u64 = 5;
+
+pub static DRAIN_STATUS_LOG_SECS: u64 = 30;
+
+pub const DEFAULT_DRAIN_DEADLINE_SECS: u64 = 2640;
+
+pub const SERVER_UPDATED_MESSAGE: &str = "Server updated, try again";
+
+pub const DRAIN_REMINDER_SECS: [u64; 2] = [300, 60];

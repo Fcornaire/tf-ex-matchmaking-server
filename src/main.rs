@@ -6,8 +6,10 @@ pub mod msg;
 pub mod relay;
 pub mod reports;
 pub mod services;
+pub mod shutdown;
 pub mod state;
 pub mod telemetry;
+pub mod version;
 pub mod ws_handler;
 
 use axum::{
@@ -29,9 +31,13 @@ use tower_http::{
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
-    constants::{DEFAULT_REPORTS_MAX_MB, MAX_REPORT_BYTES},
+    constants::{
+        DEFAULT_RELAY_PORT, DEFAULT_RELAY_PORT_CHECK_HOST, DEFAULT_REPORTS_MAX_MB, MAX_REPORT_BYTES,
+    },
+    relay::Relay,
     reports::report_handler,
     state::AppState,
+    version::ExVersion,
     ws_handler::{
         matchmaking::matchmaking_handler,
         refuse_browsers,
@@ -94,21 +100,34 @@ async fn main() {
     };
 
 
-    let relay_port = std::env::var("RELAY_PORT")
+    let relay_ports = std::env::var("RELAY_PORT")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(4537);
+        .and_then(|s| relay::parse_ports(&s))
+        .unwrap_or_else(|| vec![DEFAULT_RELAY_PORT]);
 
-    let relay = match relay::Relay::bind(relay_port).await {
+    let relay = match Relay::bind_first_free(&relay_ports).await {
         Ok(relay) => {
             tracing::info!("Relay listening on udp {}", relay.udp_port());
             Some(relay)
         }
         Err(err) => {
-            tracing::error!("Relay DISABLED, failed to bind udp {}: {}", relay_port, err);
+            tracing::error!(
+                "Relay DISABLED, failed to bind udp {:?}: {}",
+                relay_ports,
+                err
+            );
             None
         }
     };
+
+    if let Some(relay) = &relay {
+        if let Err(err) = resolve_relay_public_port(relay).await {
+            tracing::error!("Relay public port unknown, exiting: {}", err);
+            std::process::exit(1);
+        }
+
+        tracing::info!("Relay announces udp {}", relay.public_port());
+    }
 
     let reports = std::env::var("REPORTS_DIR").ok().and_then(|dir| {
         let max_mb = std::env::var("REPORTS_MAX_MB")
@@ -128,11 +147,23 @@ async fn main() {
         }
     });
 
+    let Some(min_client_version) = std::env::var("MIN_CLIENT_VERSION")
+        .ok()
+        .as_deref()
+        .and_then(ExVersion::parse)
+    else {
+        tracing::error!("Cannot start: MIN_CLIENT_VERSION must be a TF.EX version");
+        std::process::exit(1);
+    };
+
+    tracing::info!("Clients need TF.EX {} or newer", min_client_version);
+
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     let state = Arc::new(
         AppState::new_with_storage(storage)
             .with_relay(relay)
-            .with_reports(reports),
+            .with_reports(reports)
+            .with_min_client_version(min_client_version),
     );
 
     let metrics_port = std::env::var("METRICS_PORT")
@@ -184,6 +215,8 @@ async fn main() {
             .unwrap();
     });
 
+    let drain_state = state.clone();
+
     let mut jobs_task = tokio::spawn(async move {
         tracing::info!("Jobs started");
         spawn_jobs(state.clone()).await;
@@ -192,5 +225,32 @@ async fn main() {
     tokio::select! {
         _ = (&mut server_task) => {jobs_task.abort()},
         _ = (&mut jobs_task) => {server_task.abort()},
+        _ = shutdown::drain_on_signal(drain_state) => {
+            server_task.abort();
+            jobs_task.abort();
+        },
     }
+}
+
+async fn resolve_relay_public_port(relay: &Relay) -> std::io::Result<()> {
+    let Ok(value) = std::env::var("RELAY_PUBLIC_PORTS") else {
+        return Ok(());
+    };
+
+    let ports = relay::parse_ports(&value).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid RELAY_PUBLIC_PORTS '{value}'"),
+        )
+    })?;
+
+    if let [port] = ports[..] {
+        relay.set_public_port(port);
+        return Ok(());
+    }
+
+    let host = std::env::var("RELAY_PORT_CHECK_HOST")
+        .unwrap_or_else(|_| DEFAULT_RELAY_PORT_CHECK_HOST.to_string());
+
+    relay.discover_public_port(&host, &ports).await.map(|_| ())
 }

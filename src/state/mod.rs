@@ -2,6 +2,7 @@ pub mod broadcast;
 pub mod client;
 pub mod codes;
 pub mod connectivity;
+pub mod drain;
 pub mod end_game;
 pub mod lobby;
 pub mod quickplay;
@@ -14,7 +15,10 @@ pub use quickplay::{should_auto_start, QuickPlayOutcome, WIDER_SET_MOD_NAME};
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -25,6 +29,7 @@ use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::{info, warn};
 
 use crate::{
+    constants::SERVER_UPDATED_MESSAGE,
     msg::ServerMsg,
     relay::{DropReason, Relay},
     reports::Reports,
@@ -34,6 +39,7 @@ use crate::{
     },
     state::lobby::{LobbyBuilder, LobbyKind},
     telemetry,
+    version::ExVersion,
 };
 
 use self::{
@@ -72,6 +78,8 @@ pub struct AppState {
     rating_config: RatingConfig,
     relay: Option<Arc<Relay>>,
     reports: Option<Arc<Reports>>,
+    draining: Arc<AtomicBool>,
+    min_client_version: Option<ExVersion>,
 }
 
 impl AppState {
@@ -96,6 +104,8 @@ impl AppState {
             rating_config: RatingConfig::from_env(),
             relay: None,
             reports: None,
+            draining: Arc::new(AtomicBool::new(false)),
+            min_client_version: None,
         }
     }
 
@@ -106,6 +116,15 @@ impl AppState {
 
     pub fn relay(&self) -> Option<Arc<Relay>> {
         self.relay.clone()
+    }
+
+    pub fn with_min_client_version(mut self, version: ExVersion) -> Self {
+        self.min_client_version = Some(version);
+        self
+    }
+
+    pub fn min_client_version(&self) -> Option<ExVersion> {
+        self.min_client_version
     }
 
     pub fn with_reports(mut self, reports: Option<Arc<Reports>>) -> Self {
@@ -200,6 +219,7 @@ impl AppState {
         telemetry::publish_clients_by_country(clients_by_country);
         gauge!(telemetry::SIGNALING_ROOMS).set(signaling_rooms as f64);
         gauge!(telemetry::SIGNALING_PEERS).set(signaling_peers as f64);
+        gauge!(telemetry::DRAINING).set(if self.is_draining() { 1.0 } else { 0.0 });
 
         if let Some(relay) = &self.relay {
             let stats = relay.stats();
@@ -418,6 +438,10 @@ impl AppState {
     }
 
     pub async fn add_lobby(&self, lobby: &mut Lobby, addr: SocketAddr) -> Result<Lobby, String> {
+        if self.is_draining() {
+            return Err(SERVER_UPDATED_MESSAGE.to_string());
+        }
+
         let mut lobbies = self.lobbies.lock().await;
 
         if lobbies.iter().any(|l| l.room_id() == lobby.room_id()) {
@@ -485,6 +509,10 @@ impl AppState {
         name: String,
         is_player: bool,
     ) -> Result<(Lobby, String), String> {
+        if self.is_draining() {
+            return Err(SERVER_UPDATED_MESSAGE.to_string());
+        }
+
         let mut lobbies = self.lobbies.lock().await;
 
         Self::guard_not_in_lobby(&lobbies, addr)?;
@@ -506,6 +534,10 @@ impl AppState {
         name: String,
         is_player: bool,
     ) -> Result<(Lobby, String), String> {
+        if self.is_draining() {
+            return Err(SERVER_UPDATED_MESSAGE.to_string());
+        }
+
         {
             let mut clients = self.clients.lock().await;
 
@@ -700,6 +732,10 @@ impl AppState {
     }
 
     pub async fn start_lobby(&self, addr: SocketAddr) -> Result<String, String> {
+        if self.is_draining() {
+            return Err(SERVER_UPDATED_MESSAGE.to_string());
+        }
+
         let mut lobbies = self.lobbies.lock().await;
 
         let lobby = lobbies

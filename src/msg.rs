@@ -56,6 +56,12 @@ pub enum ServerMsg {
     KickedFromLobby {
         reason: String,
     },
+    Notice {
+        text: String,
+    },
+    UpdateRequired {
+        version: String,
+    },
 }
 
 impl ServerMsg {
@@ -77,6 +83,8 @@ impl ServerMsg {
             Self::SpectatorJoined { .. } => "SpectatorJoined",
             Self::SkinChunk { .. } => "SkinChunk",
             Self::KickedFromLobby { .. } => "KickedFromLobby",
+            Self::Notice { .. } => "Notice",
+            Self::UpdateRequired { .. } => "UpdateRequired",
         }
     }
 }

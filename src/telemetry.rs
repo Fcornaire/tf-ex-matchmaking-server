@@ -50,6 +50,7 @@ pub const PLAYERS_TOTAL: &str = "tfex_players_total";
 pub const PLAYERS_ACTIVE: &str = "tfex_players_active";
 pub const RATED_MATCHES_RECENT: &str = "tfex_rated_matches_recent";
 pub const START_TIME_SECONDS: &str = "tfex_start_time_seconds";
+pub const DRAINING: &str = "tfex_draining";
 
 pub const MATCH_DURATION_SECONDS: &str = "tfex_match_duration_seconds";
 pub const QUICKPLAY_WAIT_SECONDS: &str = "tfex_quickplay_wait_seconds";
@@ -151,6 +152,7 @@ fn describe() {
         "Rated matches recorded within the window"
     );
     describe_gauge!(START_TIME_SECONDS, "Unix time the server process started");
+    describe_gauge!(DRAINING, "1 while the server drains before exiting");
 
     describe_counter!(
         CONNECTIONS_TOTAL,

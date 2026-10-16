@@ -102,7 +102,8 @@ impl AppState {
                 return;
             }
 
-            let rematch = undecided.is_empty()
+            let rematch = !self.is_draining()
+                && undecided.is_empty()
                 && !votes.is_empty()
                 && votes
                     .iter()

@@ -1,12 +1,14 @@
 use std::{
+    collections::HashMap,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::Arc,
 };
 
 use axum::{
-    extract::{ConnectInfo, State},
-    response::IntoResponse,
+    extract::{ConnectInfo, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     TypedHeader,
 };
 use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
@@ -25,6 +27,7 @@ use crate::{
     msg::{ClientMsg, ServerMsg},
     state::{lobby::Lobby, AppState, QuickPlayOutcome},
     telemetry,
+    version::ExVersion,
 };
 
 pub async fn matchmaking_handler(
@@ -32,8 +35,38 @@ pub async fn matchmaking_handler(
     user_agent: Option<TypedHeader<headers::UserAgent>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+) -> Response {
+    if state.is_draining() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let version = params
+        .get("version")
+        .and_then(|version| ExVersion::parse(version));
+
+    match check_version(state.min_client_version(), version) {
+        VersionCheck::Accepted => {}
+        VersionCheck::Unknown(required) => {
+            info!(
+                "Refusing a client without TF.EX version (requires {})",
+                required
+            );
+            return StatusCode::UPGRADE_REQUIRED.into_response();
+        }
+        VersionCheck::Outdated(required) => {
+            info!(
+                "Refusing TF.EX {} (requires {})",
+                version.map(|v| v.to_string()).unwrap_or_default(),
+                required
+            );
+            return ws
+                .on_upgrade(move |socket| refuse_outdated(socket, required))
+                .into_response();
+        }
+    }
+
     let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
         user_agent.to_string()
     } else {
@@ -90,6 +123,32 @@ pub async fn matchmaking_handler(
         .collect();
 
     ws.on_upgrade(move |socket| handle_socket(socket, ips, state.clone()))
+        .into_response()
+}
+
+#[derive(Debug, PartialEq)]
+enum VersionCheck {
+    Accepted,
+    Unknown(ExVersion),
+    Outdated(ExVersion),
+}
+
+fn check_version(required: Option<ExVersion>, version: Option<ExVersion>) -> VersionCheck {
+    match (required, version) {
+        (None, _) => VersionCheck::Accepted,
+        (Some(required), None) => VersionCheck::Unknown(required),
+        (Some(required), Some(version)) if version < required => VersionCheck::Outdated(required),
+        _ => VersionCheck::Accepted,
+    }
+}
+
+async fn refuse_outdated(mut socket: WebSocket<ServerMsg, ClientMsg>, required: ExVersion) {
+    let _ = socket
+        .send(Message::Item(ServerMsg::UpdateRequired {
+            version: required.to_string(),
+        }))
+        .await;
+    let _ = socket.send(Message::Close(None)).await;
 }
 
 /// Actual websocket statemachine (one will be spawned per connection)
@@ -763,4 +822,32 @@ pub async fn handle_socket(
     }
 
     info!("Websocket context for {} destroyed", who);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_check_follows_the_minimum() {
+        let required = ExVersion::new(0, 22, 0);
+
+        assert_eq!(check_version(None, None), VersionCheck::Accepted);
+        assert_eq!(
+            check_version(Some(required), None),
+            VersionCheck::Unknown(required)
+        );
+        assert_eq!(
+            check_version(Some(required), Some(ExVersion::new(0, 21, 1))),
+            VersionCheck::Outdated(required)
+        );
+        assert_eq!(
+            check_version(Some(required), Some(required)),
+            VersionCheck::Accepted
+        );
+        assert_eq!(
+            check_version(Some(required), Some(ExVersion::new(0, 23, 0))),
+            VersionCheck::Accepted
+        );
+    }
 }

@@ -5,7 +5,7 @@ use std::{
     fmt, io,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU16, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
     },
     time::{Duration, Instant},
@@ -17,7 +17,9 @@ use tokio::{net::UdpSocket, sync::mpsc::UnboundedSender};
 use tracing::{info, warn};
 
 use self::wire::Upstream;
-use crate::constants::MAX_RELAYED_SPECTATORS;
+use crate::constants::{
+    MAX_RELAYED_SPECTATORS, RELAY_PORT_CHECK_RESEND_MS, RELAY_PORT_CHECK_TIMEOUT_MS,
+};
 
 const RECEIVE_BUFFER_SIZE: usize = 65_536;
 const MAX_PACKETS_PER_SECOND: u32 = 8_000;
@@ -153,6 +155,9 @@ enum Route {
 pub struct Relay {
     sockets: Vec<UdpSocket>,
     udp_port: u16,
+    public_port: AtomicU16,
+    port_check_id: u64,
+    checked_port: AtomicU16,
     tables: Mutex<Tables>,
     counters: Counters,
 }
@@ -161,6 +166,7 @@ impl fmt::Debug for Relay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Relay")
             .field("udp_port", &self.udp_port)
+            .field("public_port", &self.public_port())
             .finish_non_exhaustive()
     }
 }
@@ -189,6 +195,31 @@ fn bind_socket(udp_port: u16) -> io::Result<UdpSocket> {
     UdpSocket::from_std(socket.into())
 }
 
+fn is_port_free(port: u16) -> bool {
+    std::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], port))).is_ok()
+}
+
+pub fn parse_ports(value: &str) -> Option<Vec<u16>> {
+    let value = value.trim();
+
+    let (start, end) = match value.split_once('-') {
+        Some((start, end)) => (
+            start.trim().parse::<u16>().ok()?,
+            end.trim().parse::<u16>().ok()?,
+        ),
+        None => {
+            let port = value.parse::<u16>().ok()?;
+            (port, port)
+        }
+    };
+
+    if start > end {
+        return None;
+    }
+
+    Some((start..=end).collect())
+}
+
 impl Relay {
     pub async fn bind(udp_port: u16) -> io::Result<Arc<Self>> {
         let first = bind_socket(udp_port)?;
@@ -202,6 +233,9 @@ impl Relay {
         let relay = Arc::new(Self {
             sockets,
             udp_port,
+            public_port: AtomicU16::new(udp_port),
+            port_check_id: rand::thread_rng().gen_range(1..=u64::MAX),
+            checked_port: AtomicU16::new(0),
             tables: Mutex::new(Tables::default()),
             counters: Counters::default(),
         });
@@ -220,6 +254,65 @@ impl Relay {
 
     pub fn udp_port(&self) -> u16 {
         self.udp_port
+    }
+
+    pub fn public_port(&self) -> u16 {
+        self.public_port.load(Ordering::Relaxed)
+    }
+
+    pub fn set_public_port(&self, port: u16) {
+        self.public_port.store(port, Ordering::Relaxed);
+    }
+
+    pub async fn bind_first_free(ports: &[u16]) -> io::Result<Arc<Self>> {
+        for &port in ports {
+            if port == 0 || is_port_free(port) {
+                return Self::bind(port).await;
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("no free relay port in {ports:?}"),
+        ))
+    }
+
+    pub async fn discover_public_port(&self, host: &str, ports: &[u16]) -> io::Result<u16> {
+        let ip = tokio::net::lookup_host((host, 0))
+            .await?
+            .map(|addr| addr.ip())
+            .find(|ip| ip.is_ipv4())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no IPv4 address for {host}"),
+                )
+            })?;
+
+        let deadline = Instant::now() + Duration::from_millis(RELAY_PORT_CHECK_TIMEOUT_MS);
+
+        while Instant::now() < deadline {
+            for &port in ports {
+                let packet = wire::write_port_check(self.port_check_id, port);
+                let _ = self.sockets[0]
+                    .send_to(&packet, SocketAddr::new(ip, port))
+                    .await;
+            }
+
+            tokio::time::sleep(Duration::from_millis(RELAY_PORT_CHECK_RESEND_MS)).await;
+
+            let checked = self.checked_port.load(Ordering::Relaxed);
+
+            if checked != 0 {
+                self.set_public_port(checked);
+                return Ok(checked);
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("no port check came back from {host} on {ports:?}"),
+        ))
     }
 
     pub fn join(
@@ -257,7 +350,7 @@ impl Relay {
         events
             .send(ConnectionEvent::Welcome {
                 token,
-                udp_port: self.udp_port,
+                udp_port: self.public_port(),
             })
             .map_err(|_| JoinError::Closed)?;
 
@@ -374,6 +467,19 @@ impl Relay {
     }
 
     fn route(&self, buffer: &[u8], from: SocketAddr, out: &mut Vec<u8>) -> Route {
+        if let Some((id, port)) = wire::parse_port_check(buffer) {
+            if id == self.port_check_id {
+                let _ = self.checked_port.compare_exchange(
+                    0,
+                    port,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
+
+            return Route::Consumed;
+        }
+
         let Some(packet) = wire::parse_upstream(buffer) else {
             return Route::Dropped(DropReason::Malformed);
         };
@@ -611,5 +717,86 @@ mod tests {
 
         relay.leave(first);
         assert!(join("room", "third", true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn welcome_announces_the_public_port() {
+        let relay = Relay::bind(0).await.unwrap();
+        relay.set_public_port(5000);
+
+        let (events_tx, mut events) = unbounded_channel();
+        let token = relay
+            .join(key("room"), "a".to_string(), false, events_tx)
+            .unwrap();
+
+        assert_eq!(
+            events.recv().await,
+            Some(ConnectionEvent::Welcome {
+                token,
+                udp_port: 5000
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn port_check_finds_the_port_that_reaches_this_relay() {
+        let first = Relay::bind(0).await.unwrap();
+        let second = Relay::bind(0).await.unwrap();
+        let ports = [first.udp_port(), second.udp_port()];
+
+        assert_eq!(
+            second
+                .discover_public_port("127.0.0.1", &ports)
+                .await
+                .unwrap(),
+            second.udp_port()
+        );
+        assert_eq!(
+            first
+                .discover_public_port("127.0.0.1", &ports)
+                .await
+                .unwrap(),
+            first.udp_port()
+        );
+        assert_eq!(second.public_port(), second.udp_port());
+    }
+
+    #[tokio::test]
+    async fn port_check_times_out_when_nothing_answers() {
+        let relay = Relay::bind(0).await.unwrap();
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let silent_port = silent.local_addr().unwrap().port();
+
+        let result = relay
+            .discover_public_port("127.0.0.1", &[silent_port])
+            .await;
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(relay.public_port(), relay.udp_port());
+    }
+
+    #[tokio::test]
+    async fn bind_first_free_skips_a_port_held_by_another_relay() {
+        let held = Relay::bind(0).await.unwrap();
+        let spare = std::net::UdpSocket::bind("0.0.0.0:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+
+        let next = Relay::bind_first_free(&[held.udp_port(), spare])
+            .await
+            .unwrap();
+
+        assert_eq!(next.udp_port(), spare);
+    }
+
+    #[test]
+    fn parse_ports_reads_a_port_or_a_range() {
+        assert_eq!(parse_ports("4537"), Some(vec![4537]));
+        assert_eq!(parse_ports(" 4537-4539 "), Some(vec![4537, 4538, 4539]));
+        assert_eq!(parse_ports("4538-4537"), None);
+        assert_eq!(parse_ports("abc"), None);
+        assert_eq!(parse_ports(""), None);
     }
 }

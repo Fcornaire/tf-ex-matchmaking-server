@@ -11,6 +11,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::interval};
 use tracing::{info, warn};
 
+use super::is_room_peer_known;
+
 use crate::{
     constants::KEEP_ALIVE_INTERVAL,
     extensions::clients::ClientsExts,
@@ -24,6 +26,10 @@ pub async fn relay_room_handler(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    if !is_room_peer_known(&state, &room_id, &params).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     upgrade(ws, room_id, params, state, Channel::Match)
 }
 
@@ -33,6 +39,10 @@ pub async fn relay_ping_measurement_handler(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    if !is_room_peer_known(&state, &room_id, &params).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     upgrade(ws, room_id, params, state, Channel::PingMeasurement)
 }
 

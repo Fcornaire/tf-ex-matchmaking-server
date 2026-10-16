@@ -320,6 +320,10 @@ impl AppState {
                     }
                 }
                 SeriesStatus::Finished => {
+                    if self.is_draining() {
+                        return;
+                    }
+
                     if lobby.start_series().is_err() {
                         return;
                     }

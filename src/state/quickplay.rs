@@ -5,7 +5,7 @@ use rand::Rng;
 use tracing::info;
 
 use crate::{
-    constants::QUICK_PLAY_AUTO_START_GRACE_SECS,
+    constants::{QUICK_PLAY_AUTO_START_GRACE_SECS, SERVER_UPDATED_MESSAGE},
     msg::ServerMsg,
     services::geoip::Location,
     state::lobby::{GameData, LobbyBuilder, LobbyKind},
@@ -85,6 +85,12 @@ impl AppState {
         name: String,
         is_wide: bool,
     ) -> QuickPlayOutcome {
+        if self.is_draining() {
+            return QuickPlayOutcome::Failed {
+                message: SERVER_UPDATED_MESSAGE.to_string(),
+            };
+        }
+
         let location = {
             let clients = self.clients.lock().await;
 
@@ -272,6 +278,10 @@ impl AppState {
     }
 
     pub async fn quick_play_tick(&self) {
+        if self.is_draining() {
+            return;
+        }
+
         self.drain_queue_into_open_lobbies().await;
         self.auto_start_quick_play_lobbies().await;
         self.push_queue_status().await;
