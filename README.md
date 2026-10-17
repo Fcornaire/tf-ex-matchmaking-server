@@ -31,15 +31,16 @@ docker run -p 3000:3000 tf-matchmaking-server
 
 Everything is configured through environment variables. All of them are optional:
 
-| Variable          | Default   | Purpose                                               |
-| ----------------- | --------- | ----------------------------------------------------- |
-| `PORT`            | `3000`    | Game-facing port (matchmaking + signaling websockets) |
-| `METRICS_PORT`    | `4738`    | Prometheus metrics port (keep it private)             |
-| `GEOIP_CLIENT_ID` | _(unset)_ | MaxMind account ID — enables GeoIP                    |
-| `GEOIP_API_KEY`   | _(unset)_ | MaxMind license key — enables GeoIP                   |
-| `RELAY_PORT`      | `4537`    | UDP port of the relay                                 |
-| `REPORTS_DIR`     | _(unset)_ | Folder for crash/desync reports, unset to disable     |
-| `REPORTS_MAX_MB`  | `750`     | Size cap of the reports folder                        |
+| Variable             | Default   | Purpose                                               |
+| -------------------- | --------- | ----------------------------------------------------- |
+| `PORT`               | `3000`    | Game-facing port (matchmaking + signaling websockets) |
+| `METRICS_PORT`       | `4738`    | Prometheus metrics port (keep it private)             |
+| `GEOIP_CLIENT_ID`    | _(unset)_ | MaxMind account ID — enables GeoIP                    |
+| `GEOIP_API_KEY`      | _(unset)_ | MaxMind license key — enables GeoIP                   |
+| `RELAY_PORT`         | `4537`    | UDP port of the relay                                 |
+| `REPORTS_DIR`        | _(unset)_ | Folder for crash/desync reports, unset to disable     |
+| `REPORTS_MAX_MB`     | `750`     | Size cap of the reports folder                        |
+| `MIN_CLIENT_VERSION` | `0.0.0`   | Oldest TF.EX version allowed to connect               |
 
 ## Relay (optional)
 

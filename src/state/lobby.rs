@@ -625,6 +625,8 @@ pub struct Player {
     #[serde(default)]
     archer_mods: Vec<String>,
     #[serde(default)]
+    starts_without_hat: Option<bool>,
+    #[serde(default)]
     custom_variants: Vec<String>,
     #[serde(default)]
     use_instant_replay: bool,
@@ -654,6 +656,7 @@ impl Player {
             team: neutral_team(),
             custom_archer_id: String::new(),
             archer_mods: Vec::new(),
+            starts_without_hat: None,
             custom_variants: Vec::new(),
             use_instant_replay: false,
             have_modified_game_files: false,

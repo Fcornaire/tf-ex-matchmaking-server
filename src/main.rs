@@ -147,13 +147,19 @@ async fn main() {
         }
     });
 
-    let Some(min_client_version) = std::env::var("MIN_CLIENT_VERSION")
-        .ok()
-        .as_deref()
-        .and_then(ExVersion::parse)
-    else {
-        tracing::error!("Cannot start: MIN_CLIENT_VERSION must be a TF.EX version");
-        std::process::exit(1);
+    let min_client_version = match std::env::var("MIN_CLIENT_VERSION") {
+        Err(_) => {
+            tracing::warn!("MIN_CLIENT_VERSION is not set");
+            ExVersion::new(0, 0, 0)
+        }
+        Ok(value) => {
+            let Some(version) = ExVersion::parse(&value) else {
+                tracing::error!("Cannot start: MIN_CLIENT_VERSION must be a TF.EX version");
+                std::process::exit(1);
+            };
+
+            version
+        }
     };
 
     tracing::info!("Clients need TF.EX {} or newer", min_client_version);
