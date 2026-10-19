@@ -8,6 +8,7 @@ use tracing::error;
 use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
 use crate::services::geoip::Location;
 use crate::state::connectivity::{peers_of, Connectivity, ConnectivityUpdate, PeerPair};
+use crate::state::ranked::RankedSeat;
 use crate::state::series::Series;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -54,6 +55,7 @@ pub enum LobbyKind {
     Standard,
     QuickPlay,
     Private,
+    Ranked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +80,8 @@ pub struct Lobby {
     join_code: Option<String>,
     #[serde(default)]
     series: Option<Series>,
+    #[serde(default)]
+    ranked_seats: Vec<RankedSeat>,
     #[serde(default)]
     relayed_pairs: Vec<PeerPair>,
     #[serde(default)]
@@ -162,6 +166,11 @@ impl Lobby {
 
     pub fn is_connectivity_settled(&self) -> bool {
         self.is_connectivity_settled
+    }
+
+    pub fn has_working_routes(&self) -> bool {
+        self.connectivity
+            .has_working_routes(&self.player_peers(), &self.relayed_pairs)
     }
 
     pub fn record_measured(&mut self, addr: &str, peer: &str) -> bool {
@@ -359,6 +368,22 @@ impl Lobby {
         }
     }
 
+    pub fn ranked_seats(&self) -> &[RankedSeat] {
+        &self.ranked_seats
+    }
+
+    pub fn set_ranked_seats(&mut self, seats: Vec<RankedSeat>) {
+        self.ranked_seats = seats;
+    }
+
+    pub fn set_ranked_result(&mut self, seat: usize, rating: f64, provisional: bool, delta: f64) {
+        if let Some(entry) = self.ranked_seats.iter_mut().find(|s| s.seat == seat) {
+            entry.rating = rating.round() as i32;
+            entry.provisional = provisional;
+            entry.delta = Some(delta.round() as i32);
+        }
+    }
+
     pub fn secs_since_membership_change(&self) -> u64 {
         self.membership_changed_at
             .map(|at| at.elapsed().as_secs())
@@ -383,7 +408,7 @@ impl Lobby {
     }
 
     pub fn promote_host_if_needed(&mut self) {
-        if self.kind != LobbyKind::QuickPlay
+        if !matches!(self.kind, LobbyKind::QuickPlay | LobbyKind::Ranked)
             || self.players.is_empty()
             || self.players.iter().any(|p| p.is_host)
         {
@@ -794,6 +819,7 @@ impl LobbyBuilder {
             kind: self.kind.unwrap_or_default(),
             join_code: self.join_code,
             series: None,
+            ranked_seats: vec![],
             relayed_pairs: vec![],
             is_checking_connections: false,
             is_report_enabled: self.is_report_enabled,

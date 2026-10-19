@@ -34,10 +34,11 @@ impl AppState {
         }
 
         let queued: Vec<String> = self
-            .queue
-            .lock()
+            .queues
+            .quick_play
+            .take_all()
             .await
-            .drain(..)
+            .into_iter()
             .map(|queued| queued.addr.to_string())
             .collect();
 
@@ -53,6 +54,8 @@ impl AppState {
             },
         )
         .await;
+
+        self.close_ranked_queue().await;
 
         self.close_unseated_connections().await;
     }

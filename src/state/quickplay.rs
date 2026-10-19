@@ -15,12 +15,32 @@ use crate::{
 use super::{
     client::Room,
     lobby::{self, Lobby, Player},
-    AppState, QueuedPlayer,
+    queue::{QueueCounts, QueueEntry},
+    AppState,
 };
 
 pub const WIDER_SET_MOD_NAME: &str = "Teuria.WiderSet";
 
-/// WiderSet changes level geometry, so wide and standard players can never share a match
+#[derive(Debug, Clone)]
+pub struct QuickplayQueued {
+    pub addr: SocketAddr,
+    pub name: String,
+    pub location: Location,
+    pub is_wide: bool,
+    pub queued_at: Instant,
+}
+
+impl QueueEntry for QuickplayQueued {
+    fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    fn is_wide(&self) -> bool {
+        self.is_wide
+    }
+}
+
+/// WiderSet changes level geometry, so wide and standard players can never match
 fn lobby_is_wide(lobby: &Lobby) -> bool {
     lobby.mods().iter().any(|m| {
         m.name() == WIDER_SET_MOD_NAME
@@ -29,21 +49,6 @@ fn lobby_is_wide(lobby: &Lobby) -> bool {
                 .map(|value| value.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
     })
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct QueueCounts {
-    pub standard: u32,
-    pub wide: u32,
-}
-
-fn queue_counts(queue: &[QueuedPlayer]) -> QueueCounts {
-    let wide = queue.iter().filter(|q| q.is_wide).count() as u32;
-
-    QueueCounts {
-        standard: queue.len() as u32 - wide,
-        wide,
-    }
 }
 
 #[derive(Debug)]
@@ -107,7 +112,7 @@ impl AppState {
             }
         };
 
-        let mut queue = self.queue.lock().await;
+        let mut queue = self.queues.quick_play.lock().await;
         let mut lobbies = self.lobbies.lock().await;
 
         if lobbies.iter().any(|l| l.has_member(&addr.to_string())) {
@@ -151,7 +156,7 @@ impl AppState {
 
             let Some(partner_client) = partner_client else {
                 drop(clients);
-                queue.push(QueuedPlayer {
+                queue.push(QuickplayQueued {
                     addr,
                     name,
                     location,
@@ -159,7 +164,7 @@ impl AppState {
                     queued_at: Instant::now(),
                 });
 
-                return QuickPlayOutcome::Queued(queue_counts(&queue));
+                return QuickPlayOutcome::Queued(QueueCounts::of(&queue));
             };
 
             partner_client.room = Some(Room::new(room_id.clone()));
@@ -238,7 +243,7 @@ impl AppState {
             };
         }
 
-        queue.push(QueuedPlayer {
+        queue.push(QuickplayQueued {
             addr,
             name,
             location,
@@ -246,15 +251,15 @@ impl AppState {
             queued_at: Instant::now(),
         });
 
-        QuickPlayOutcome::Queued(queue_counts(&queue))
+        QuickPlayOutcome::Queued(QueueCounts::of(&queue))
     }
 
     pub async fn exit_quick_play(&self, addr: SocketAddr) -> QueueCounts {
-        let mut queue = self.queue.lock().await;
+        let mut queue = self.queues.quick_play.lock().await;
 
         queue.retain(|q| q.addr != addr);
 
-        queue_counts(&queue)
+        QueueCounts::of(&queue)
     }
 
     fn nearest_open_quick_play<'a>(
@@ -291,11 +296,11 @@ impl AppState {
         let mut seated: Vec<(String, Lobby, String)> = vec![];
 
         {
-            let mut queue = self.queue.lock().await;
+            let mut queue = self.queues.quick_play.lock().await;
             let mut lobbies = self.lobbies.lock().await;
 
-            let mut remaining: Vec<QueuedPlayer> = vec![];
-            let waiting: Vec<QueuedPlayer> = queue.drain(..).collect();
+            let mut remaining: Vec<QuickplayQueued> = vec![];
+            let waiting: Vec<QuickplayQueued> = queue.drain(..).collect();
 
             for queued in waiting {
                 let target =
@@ -394,11 +399,11 @@ impl AppState {
 
     async fn push_queue_status(&self) {
         let (addrs, counts) = {
-            let queue = self.queue.lock().await;
+            let queue = self.queues.quick_play.lock().await;
 
             (
                 queue.iter().map(|q| q.addr.to_string()).collect::<Vec<_>>(),
-                queue_counts(&queue),
+                QueueCounts::of(&queue),
             )
         };
 
@@ -504,7 +509,10 @@ mod tests {
             .enter_quick_play(second, "second".to_string(), false)
             .await;
 
-        state.remove_from_lobby(first).await.unwrap();
+        state
+            .remove_from_lobby(first, crate::state::ranked::Departure::Left)
+            .await
+            .unwrap();
 
         let lobbies = state.lobbies.lock().await;
         let lobby = lobbies.first().unwrap();

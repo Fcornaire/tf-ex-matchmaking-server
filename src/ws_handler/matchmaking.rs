@@ -25,7 +25,7 @@ use crate::{
     constants::KEEP_ALIVE_INTERVAL,
     extensions::{clients::ClientsExts, str::StrExts},
     msg::{ClientMsg, ServerMsg},
-    state::{lobby::Lobby, AppState, QuickPlayOutcome},
+    state::{lobby::Lobby, ranked::Departure, AppState, QuickPlayOutcome},
     telemetry,
     version::ExVersion,
 };
@@ -245,10 +245,26 @@ pub async fn handle_socket(
                             .await
                             .unwrap();
                     }
+                    ClientMsg::GetLeaderboard {} => {
+                        debug!("{} requested the leaderboard", who);
+
+                        if let Some(view) = cloned_state_recv.leaderboard_for(ip).await {
+                            send_task_in_rcv
+                                .send(Message::Item(ServerMsg::Leaderboard {
+                                    entries: view.entries,
+                                    own: view.own,
+                                    around: view.around,
+                                    total: view.total,
+                                }))
+                                .await
+                                .unwrap();
+                        }
+                    }
                     ClientMsg::CreateLobby { mut lobby } => {
                         info!("{} wants to create a lobby", who);
 
                         cloned_state_recv.exit_quick_play(ip).await;
+                        cloned_state_recv.exit_ranked(ip).await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv.add_lobby(&mut lobby, ip).await {
@@ -283,6 +299,7 @@ pub async fn handle_socket(
                         info!("{who} wants to join lobby {room_id}, is a player {is_player}");
 
                         cloned_state_recv.exit_quick_play(ip).await;
+                        cloned_state_recv.exit_ranked(ip).await;
                         cloned_state_recv
                             .leave_stale_lobbies(ip, Some(&room_id))
                             .await;
@@ -335,6 +352,7 @@ pub async fn handle_socket(
                     ClientMsg::EnterQuickPlay { name, is_wide } => {
                         info!("{who} entered the quickplay queue (wide: {is_wide})");
 
+                        cloned_state_recv.exit_ranked(ip).await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         let outcome = cloned_state_recv.enter_quick_play(ip, name, is_wide).await;
@@ -445,6 +463,54 @@ pub async fn handle_socket(
                             .await
                             .unwrap();
                     }
+                    ClientMsg::EnterRanked { name, is_wide } => {
+                        info!("{who} entered the ranked queue (wide: {is_wide})");
+
+                        cloned_state_recv.leave_stale_lobbies(ip, None).await;
+
+                        match cloned_state_recv.enter_ranked(ip, name, is_wide).await {
+                            Ok(Some(counts)) => {
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::RankedStatus {
+                                        queued: true,
+                                        searching_standard: counts.standard,
+                                        searching_wide: counts.wide,
+                                        message: "".to_string(),
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                            Ok(None) => {}
+                            Err(message) => {
+                                warn!("Ranked enter failed for {} : {}", who, message);
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::RankedStatus {
+                                        queued: false,
+                                        searching_standard: 0,
+                                        searching_wide: 0,
+                                        message,
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    ClientMsg::ExitRanked {} => {
+                        info!("{} left the ranked queue", who);
+
+                        cloned_state_recv.exit_ranked(ip).await;
+
+                        send_task_in_rcv
+                            .send(Message::Item(ServerMsg::RankedStatus {
+                                queued: false,
+                                searching_standard: 0,
+                                searching_wide: 0,
+                                message: "".to_string(),
+                            }))
+                            .await
+                            .unwrap();
+                    }
                     ClientMsg::JoinPrivate {
                         code,
                         name,
@@ -455,6 +521,7 @@ pub async fn handle_socket(
                         );
 
                         cloned_state_recv.exit_quick_play(ip).await;
+                        cloned_state_recv.exit_ranked(ip).await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv
@@ -565,7 +632,10 @@ pub async fn handle_socket(
                     ClientMsg::LeaveLobby {} => {
                         info!("{} wants to leave lobby", who);
 
-                        match cloned_state_recv.remove_from_lobby(ip).await {
+                        match cloned_state_recv
+                            .remove_from_lobby(ip, Departure::Left)
+                            .await
+                        {
                             Ok(room_ids) => {
                                 for room_id in room_ids {
                                     if let Err(err) =
@@ -746,31 +816,34 @@ pub async fn handle_socket(
 
             let Some(client) = client else {
                 info!("Keep alive stopped, client already removed");
-                break;
+                return "timeout";
             };
 
             if !client.is_alive() {
                 info!("{} is no longer alive, aborting...", client.label());
-                break;
+                return "timeout";
             }
 
             client.keep_alive_sent();
             client.maybe_not_alive();
             drop(clients);
 
-            send_task_in_keep_alive
+            if send_task_in_keep_alive
                 .send(Message::Item(ServerMsg::KeepAlive {}))
                 .await
-                .unwrap();
+                .is_err()
+            {
+                return "clean";
+            }
         }
     });
 
     let disconnect_reason;
 
     tokio::select! {
-        _ = (&mut keep_alive_task) => {
+        reason = (&mut keep_alive_task) => {
             recv_task.abort();
-            disconnect_reason = "timeout";
+            disconnect_reason = reason.unwrap_or("timeout");
         },
         _ = (&mut recv_task) => {
             keep_alive_task.abort();
@@ -783,6 +856,7 @@ pub async fn handle_socket(
     let who = state.client_label(ip).await;
 
     state.exit_quick_play(ip).await;
+    state.exit_ranked(ip).await;
 
     let mut clients = state.clone().clients.clone();
 
@@ -791,7 +865,14 @@ pub async fn handle_socket(
         .await
         .is_some_and(|cli| cli.room.is_some());
 
-    match state.remove_from_lobby(ip).await {
+    let departure = if disconnect_reason == "timeout" {
+        state.note_connection_lost(ip).await;
+        Departure::Disconnected
+    } else {
+        Departure::Left
+    };
+
+    match state.remove_from_lobby(ip, departure).await {
         Ok(room_ids) => {
             info!("{} was in a lobby", who);
 

@@ -1,10 +1,11 @@
-use std::{sync::atomic::Ordering, time::Duration};
-
 use metrics::{counter, histogram};
 use tracing::info;
 
 use crate::{
-    constants::END_GAME_CHOICE_SECONDS, msg::ServerMsg, state::lobby::EndGameChoice, telemetry,
+    constants::{END_GAME_CHOICE_SECONDS, RANKED_END_GAME_CHOICE_SECONDS},
+    msg::ServerMsg,
+    state::lobby::{EndGameChoice, LobbyKind},
+    telemetry,
 };
 
 use super::AppState;
@@ -30,54 +31,53 @@ impl AppState {
     }
 
     pub async fn start_end_game_countdown(&self, room_id: String) {
-        let generation = {
-            let mut running = self.end_game_countdowns.lock().await;
-
-            if running.contains_key(&room_id) {
-                return;
-            }
-
-            let generation = self.end_game_generation.fetch_add(1, Ordering::Relaxed);
-            running.insert(room_id.clone(), generation);
-            generation
+        let Some(generation) = self.countdowns.end_game.start_if_idle(&room_id).await else {
+            return;
         };
 
-        {
+        let choice_secs = {
             let mut lobbies = self.lobbies.lock().await;
 
-            if let Some(lobby) = lobbies.iter_mut().find(|l| l.room_id() == room_id) {
-                counter!(telemetry::MATCHES_ENDED_TOTAL, "kind" => telemetry::kind_label(lobby.kind()))
-                    .increment(1);
+            match lobbies.iter_mut().find(|l| l.room_id() == room_id) {
+                Some(lobby) => {
+                    counter!(telemetry::MATCHES_ENDED_TOTAL, "kind" => telemetry::kind_label(lobby.kind()))
+                        .increment(1);
 
-                if let Some(secs) = lobby.take_match_duration_secs() {
-                    histogram!(telemetry::MATCH_DURATION_SECONDS).record(secs);
+                    if let Some(secs) = lobby.take_match_duration_secs() {
+                        histogram!(telemetry::MATCH_DURATION_SECONDS).record(secs);
+                    }
+
+                    if lobby.kind() == LobbyKind::Ranked {
+                        RANKED_END_GAME_CHOICE_SECONDS
+                    } else {
+                        END_GAME_CHOICE_SECONDS
+                    }
                 }
+                None => END_GAME_CHOICE_SECONDS,
             }
-        }
+        };
 
         info!(
             "End game choice window open for room {} ({}s)",
-            room_id, END_GAME_CHOICE_SECONDS
+            room_id, choice_secs
         );
 
         let state = self.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(END_GAME_CHOICE_SECONDS)).await;
-
-            let still_current = {
-                let running = state.end_game_countdowns.lock().await;
-                running.get(&room_id) == Some(&generation)
-            };
-
-            if still_current {
+            if state
+                .countdowns
+                .end_game
+                .wait(&room_id, generation, choice_secs)
+                .await
+            {
                 state.resolve_end_game(room_id, true).await;
             }
         });
     }
 
     pub async fn resolve_end_game(&self, room_id: String, force: bool) {
-        let mut running = self.end_game_countdowns.lock().await;
+        let mut running = self.countdowns.end_game.lock().await;
 
         if force && !running.contains_key(&room_id) {
             return;

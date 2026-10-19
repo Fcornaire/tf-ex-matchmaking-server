@@ -79,6 +79,15 @@ impl Connectivity {
                 .all(|peer| !is_unresolved(self.relay.get(peer)))
     }
 
+    pub fn has_working_routes(&self, peers: &[String], relayed: &[PeerPair]) -> bool {
+        pairs(peers).iter().all(|pair| {
+            self.direct.get(pair) == Some(&Link::Reached)
+                || (relayed.contains(pair)
+                    && self.relay.get(&pair.0) == Some(&Link::Reached)
+                    && self.relay.get(&pair.1) == Some(&Link::Reached))
+        })
+    }
+
     pub fn update_direct(&mut self, peers: &[String], now: Instant) -> Vec<PeerPair> {
         let current = pairs(peers);
         self.direct.retain(|pair, _| current.contains(pair));

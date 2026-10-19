@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::atomic::Ordering, time::Duration};
+use std::net::SocketAddr;
 
 use metrics::counter;
 use rand::seq::IteratorRandom;
@@ -11,7 +11,10 @@ use crate::{
     telemetry,
 };
 
-use super::{lobby::Lobby, AppState};
+use super::{
+    lobby::{Lobby, LobbyKind},
+    AppState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SeriesStatus {
@@ -45,6 +48,8 @@ pub struct Series {
     pub awaiting_result: bool,
     #[serde(default)]
     pub picks: Vec<SeriesPick>,
+    #[serde(default)]
+    pub forfeit_side: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +72,7 @@ impl Series {
             abort_reason: None,
             awaiting_result: false,
             picks: vec![],
+            forfeit_side: None,
         };
 
         series.next_map_id = series.random_unplayed_map();
@@ -217,6 +223,24 @@ impl Series {
         self.awaiting_result = false;
     }
 
+    pub fn forfeit(&mut self, loser_side: usize) {
+        if self.status != SeriesStatus::InProgress {
+            return;
+        }
+
+        self.status = SeriesStatus::Finished;
+        self.winner_side = (0..self.sides.len()).find(|side| *side != loser_side);
+        self.forfeit_side = Some(loser_side);
+        self.picker_side = None;
+        self.next_map_id = None;
+        self.picks.clear();
+        self.awaiting_result = false;
+    }
+
+    pub fn has_started(&self) -> bool {
+        !self.games.is_empty() || self.awaiting_result
+    }
+
     pub fn is_in_progress(&self) -> bool {
         self.status == SeriesStatus::InProgress
     }
@@ -244,8 +268,13 @@ impl AppState {
                     series.abort_reason.clone().unwrap_or_default()
                 );
 
-                self.send_msg_to_lobby(lobby, ServerMsg::ArcherSelectLobby {})
-                    .await;
+                let msg = if lobby.kind() == LobbyKind::Ranked {
+                    ServerMsg::SeriesLobby {}
+                } else {
+                    ServerMsg::ArcherSelectLobby {}
+                };
+
+                self.send_msg_to_lobby(lobby, msg).await;
             }
             SeriesStatus::Finished => {
                 self.send_msg_to_lobby(lobby, ServerMsg::SeriesLobby {})
@@ -298,6 +327,17 @@ impl AppState {
     }
 
     pub async fn try_start_series_game(&self, room_id: String) {
+        if self
+            .queues
+            .ranked
+            .pending
+            .lock()
+            .await
+            .contains_key(&room_id)
+        {
+            return;
+        }
+
         let started = {
             let mut lobbies = self.lobbies.lock().await;
 
@@ -320,6 +360,10 @@ impl AppState {
                     }
                 }
                 SeriesStatus::Finished => {
+                    if lobby.kind() == LobbyKind::Ranked {
+                        return;
+                    }
+
                     if self.is_draining() {
                         return;
                     }
@@ -345,7 +389,7 @@ impl AppState {
             lobby.clone()
         };
 
-        self.cancel_series_countdown(&room_id).await;
+        self.countdowns.series.cancel(&room_id).await;
 
         info!(
             "Series game {} starting in room {} on tower {}",
@@ -368,13 +412,8 @@ impl AppState {
             .await;
     }
 
-    async fn start_series_countdown(&self, room_id: String) {
-        let generation = {
-            let mut running = self.series_countdowns.lock().await;
-            let generation = self.end_game_generation.fetch_add(1, Ordering::Relaxed);
-            running.insert(room_id.clone(), generation);
-            generation
-        };
+    pub(super) async fn start_series_countdown(&self, room_id: String) {
+        let generation = self.countdowns.series.start(&room_id).await;
 
         info!(
             "Series ready window open for room {} ({}s)",
@@ -384,31 +423,19 @@ impl AppState {
         let state = self.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(SERIES_READY_SECONDS)).await;
-
-            let still_current = {
-                let running = state.series_countdowns.lock().await;
-                running.get(&room_id) == Some(&generation)
-            };
-
-            if still_current {
+            if state
+                .countdowns
+                .series
+                .wait(&room_id, generation, SERIES_READY_SECONDS)
+                .await
+            {
                 state.expire_series_wait(room_id).await;
             }
         });
     }
 
-    async fn cancel_series_countdown(&self, room_id: &str) {
-        self.series_countdowns.lock().await.remove(room_id);
-    }
-
     async fn expire_series_wait(&self, room_id: String) {
-        if self
-            .series_countdowns
-            .lock()
-            .await
-            .remove(&room_id)
-            .is_none()
-        {
+        if !self.countdowns.series.cancel(&room_id).await {
             return;
         }
 

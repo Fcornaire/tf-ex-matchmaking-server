@@ -2,10 +2,14 @@ pub mod broadcast;
 pub mod client;
 pub mod codes;
 pub mod connectivity;
+pub mod countdown;
 pub mod drain;
 pub mod end_game;
+pub mod leaderboard;
 pub mod lobby;
+pub mod queue;
 pub mod quickplay;
+pub mod ranked;
 pub mod rating;
 pub mod series;
 pub mod signaling_state;
@@ -15,17 +19,14 @@ pub use quickplay::{should_auto_start, QuickPlayOutcome, WIDER_SET_MOD_NAME};
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    sync::{
-        atomic::{AtomicBool, AtomicU64},
-        Arc,
-    },
-    time::{Duration, Instant},
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
 };
 
 use axum_typed_websockets::Message;
 use metrics::{counter, gauge, histogram};
 use rand::Rng;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tracing::{info, warn};
 
 use crate::{
@@ -34,8 +35,8 @@ use crate::{
     relay::{DropReason, Relay},
     reports::Reports,
     services::{
-        geoip::{GeoipClient, Location},
-        storage::{RatingConfig, Storage},
+        geoip::GeoipClient,
+        storage::{Ladder, RatingConfig, Storage},
     },
     state::lobby::{LobbyBuilder, LobbyKind},
     telemetry,
@@ -45,21 +46,13 @@ use crate::{
 use self::{
     client::{Client, Room},
     lobby::{GameData, Lobby, Mod, Player},
+    series::SeriesStatus,
     signaling_state::SignalingState,
 };
 
 pub type IpV4V6 = (SocketAddr, Option<SocketAddr>);
 pub type Clients = Arc<Mutex<HashMap<IpV4V6, Client>>>;
 pub type Lobbies = Arc<Mutex<Vec<Lobby>>>;
-
-#[derive(Debug, Clone)]
-pub struct QueuedPlayer {
-    pub addr: SocketAddr,
-    pub name: String,
-    pub location: Location,
-    pub is_wide: bool,
-    pub queued_at: Instant,
-}
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -69,12 +62,11 @@ pub struct AppState {
     pub ping_measurement_signaling: Arc<Mutex<SignalingState>>,
     lobbies: Lobbies,
     connections: Arc<Mutex<HashMap<SocketAddr, Sender<Message<ServerMsg>>>>>,
-    end_game_countdowns: Arc<Mutex<HashMap<String, u64>>>,
-    series_countdowns: Arc<Mutex<HashMap<String, u64>>>,
-    end_game_generation: Arc<AtomicU64>,
-    queue: Arc<Mutex<Vec<QueuedPlayer>>>,
+    countdowns: countdown::Countdowns,
+    queues: queue::Queues,
     storage: Option<Arc<Storage>>,
     match_reports: Arc<Mutex<HashMap<String, rating::PendingReports>>>,
+    leaderboard: Arc<RwLock<leaderboard::Leaderboard>>,
     rating_config: RatingConfig,
     relay: Option<Arc<Relay>>,
     reports: Option<Arc<Reports>>,
@@ -95,12 +87,11 @@ impl AppState {
             ping_measurement_signaling: Arc::new(Mutex::new(SignalingState::default())),
             lobbies: Arc::new(Mutex::new(vec![])),
             connections: Arc::new(Mutex::new(HashMap::new())),
-            end_game_countdowns: Arc::new(Mutex::new(HashMap::new())),
-            series_countdowns: Arc::new(Mutex::new(HashMap::new())),
-            end_game_generation: Arc::new(AtomicU64::new(0)),
-            queue: Arc::new(Mutex::new(vec![])),
+            countdowns: countdown::Countdowns::default(),
+            queues: queue::Queues::default(),
             storage,
             match_reports: Arc::new(Mutex::new(HashMap::new())),
+            leaderboard: Arc::new(RwLock::new(leaderboard::Leaderboard::default())),
             rating_config: RatingConfig::from_env(),
             relay: None,
             reports: None,
@@ -146,21 +137,18 @@ impl AppState {
     }
 
     pub async fn publish_metrics_gauges(&self) {
-        let (queue_wide, queue_standard) = {
-            let queue = self.queue.lock().await;
-            let wide = queue.iter().filter(|q| q.is_wide).count();
-
-            (wide, queue.len() - wide)
-        };
+        let quick_play_counts = self.queues.quick_play.counts().await;
+        let ranked_counts = self.queues.ranked.queue.counts().await;
 
         let kinds = [
             LobbyKind::Standard,
             LobbyKind::QuickPlay,
             LobbyKind::Private,
+            LobbyKind::Ranked,
         ];
-        let mut lobby_counts = [0usize; 3];
-        let mut game_counts = [0usize; 3];
-        let mut player_counts = [0usize; 3];
+        let mut lobby_counts = [0usize; 4];
+        let mut game_counts = [0usize; 4];
+        let mut player_counts = [0usize; 4];
         let mut spectators = 0usize;
 
         {
@@ -203,8 +191,12 @@ impl AppState {
             (signaling.rooms.len(), signaling.clients.len())
         };
 
-        gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "true").set(queue_wide as f64);
-        gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "false").set(queue_standard as f64);
+        gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "true")
+            .set(quick_play_counts.wide as f64);
+        gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "false")
+            .set(quick_play_counts.standard as f64);
+        gauge!(telemetry::RANKED_QUEUE_DEPTH, "wide" => "true").set(ranked_counts.wide as f64);
+        gauge!(telemetry::RANKED_QUEUE_DEPTH, "wide" => "false").set(ranked_counts.standard as f64);
 
         for (slot, kind) in kinds.iter().enumerate() {
             let label = telemetry::kind_label(*kind);
@@ -245,15 +237,29 @@ impl AppState {
         gauge!(telemetry::MATCH_REPORTS_PENDING).set(pending_reports as f64);
 
         if let Some(storage) = &self.storage {
-            match storage.top_players(20).await {
-                Ok(top) => {
-                    for (player_id, name, rating) in top {
-                        gauge!(telemetry::PLAYER_RATING, "player_id" => player_id, "name" => name)
-                            .set(rating);
+            for ladder in [Ladder::Casual, Ladder::Ranked] {
+                match storage.top_players(ladder, 20).await {
+                    Ok(top) => {
+                        for (player_id, name, rating) in top {
+                            gauge!(telemetry::PLAYER_RATING, "player_id" => player_id, "name" => name, "ladder" => ladder.as_str())
+                                .set(rating);
+                        }
+                    }
+                    Err(err) => {
+                        info!("Could not publish top players : {}", err);
                     }
                 }
-                Err(err) => {
-                    info!("Could not publish top players : {}", err);
+
+                match storage.top_abandons(ladder, 20).await {
+                    Ok(top) => {
+                        for (player_id, name, abandons) in top {
+                            gauge!(telemetry::PLAYER_ABANDONS, "player_id" => player_id, "name" => name, "ladder" => ladder.as_str())
+                                .set(abandons as f64);
+                        }
+                    }
+                    Err(err) => {
+                        info!("Could not publish top abandons : {}", err);
+                    }
                 }
             }
 
@@ -318,11 +324,16 @@ impl AppState {
         }
 
         if let Some(storage) = &self.storage {
-            let rating = storage.get_or_create_player(player_id, name).await?;
+            storage
+                .update_or_insert_player(player_id.clone(), name)
+                .await?;
+            let rating = storage
+                .get_or_create_rating(player_id, Ladder::Casual)
+                .await?;
 
             info!(
-                "{} ({}) identified (rating {:.0}, {} matches)",
-                rating.name, rating.id, rating.rating, rating.matches_played
+                "{} ({}) identified (casual rating {:.0}, {} rated)",
+                rating.name, rating.id, rating.rating, rating.rated_count
             );
         }
 
@@ -427,7 +438,7 @@ impl AppState {
             .filter(|l| match l.kind() {
                 LobbyKind::Standard => !l.is_full() || l.in_game() || l.series_in_progress(),
                 LobbyKind::QuickPlay => l.in_game(),
-                LobbyKind::Private => false,
+                LobbyKind::Private | LobbyKind::Ranked => false,
             })
             .cloned()
             .collect();
@@ -440,6 +451,10 @@ impl AppState {
     pub async fn add_lobby(&self, lobby: &mut Lobby, addr: SocketAddr) -> Result<Lobby, String> {
         if self.is_draining() {
             return Err(SERVER_UPDATED_MESSAGE.to_string());
+        }
+
+        if lobby.kind() == LobbyKind::Ranked {
+            return Err("Ranked lobbies are automated".to_string());
         }
 
         let mut lobbies = self.lobbies.lock().await;
@@ -521,6 +536,10 @@ impl AppState {
             .iter_mut()
             .find(|l| l.room_id() == room_id)
             .ok_or(format!("Lobby {} not found", room_id))?;
+
+        if lobby.kind() == LobbyKind::Ranked {
+            return Err("Ranked matches can't be joined".to_string());
+        }
 
         let room_peer_id = self.seat_member(lobby, addr, name, is_player).await?;
 
@@ -655,8 +674,12 @@ impl AppState {
         Ok(room_peer_id)
     }
 
-    pub async fn remove_from_lobby(&self, addr: SocketAddr) -> Result<Vec<String>, String> {
-        let room_ids = self.remove_from_lobbies(addr, None).await?;
+    pub async fn remove_from_lobby(
+        &self,
+        addr: SocketAddr,
+        departure: ranked::Departure,
+    ) -> Result<Vec<String>, String> {
+        let room_ids = self.remove_from_lobbies(addr, None, departure).await?;
 
         if room_ids.is_empty() {
             return Err("Lobby not found".to_string());
@@ -666,7 +689,10 @@ impl AppState {
     }
 
     pub async fn leave_stale_lobbies(&self, addr: SocketAddr, keep_room_id: Option<&str>) {
-        let room_ids = match self.remove_from_lobbies(addr, keep_room_id).await {
+        let room_ids = match self
+            .remove_from_lobbies(addr, keep_room_id, ranked::Departure::Left)
+            .await
+        {
             Ok(room_ids) if !room_ids.is_empty() => room_ids,
             _ => return,
         };
@@ -690,34 +716,52 @@ impl AppState {
         &self,
         addr: SocketAddr,
         keep_room_id: Option<&str>,
+        departure: ranked::Departure,
     ) -> Result<Vec<String>, String> {
         let mut lobbies = self.lobbies.lock().await;
         let mut clients = self.clients.lock().await;
 
-        let client: &mut Client = clients
-            .iter_mut()
-            .find(|((ipv4, ipv6), _)| *ipv4 == addr || ipv6.is_some() && ipv6.unwrap() == addr)
-            .ok_or("Client not found".to_string())?
-            .1;
+        if !clients
+            .keys()
+            .any(|(ipv4, ipv6)| *ipv4 == addr || *ipv6 == Some(addr))
+        {
+            return Err("Client not found".to_string());
+        }
 
         let member = addr.to_string();
         let mut room_ids = vec![];
+        let mut ranked_departures = vec![];
 
         for lobby in lobbies
             .iter_mut()
             .filter(|l| l.has_member(&member) && Some(l.room_id().as_str()) != keep_room_id)
         {
             let series_running = lobby.series_in_progress();
+
+            ranked_departures.extend(ranked::settle_departure(
+                lobby, &member, &clients, departure,
+            ));
+
             lobby.remove_player_or_spectator(member.clone());
             lobby.promote_host_if_needed();
 
-            if series_running && !lobby.series_in_progress() {
+            if series_running
+                && lobby
+                    .series()
+                    .is_some_and(|s| s.status == SeriesStatus::Aborted)
+            {
                 info!("Series in room {} aborted, a player left", lobby.room_id());
                 counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "aborted").increment(1);
             }
 
             room_ids.push(lobby.room_id());
         }
+
+        let client: &mut Client = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || *ipv6 == Some(addr))
+            .ok_or("Client not found".to_string())?
+            .1;
 
         let is_room_left = client
             .room
@@ -726,6 +770,15 @@ impl AppState {
 
         if keep_room_id.is_none() || is_room_left {
             client.room = None;
+        }
+
+        drop(clients);
+        drop(lobbies);
+
+        self.note_departure(addr, departure).await;
+
+        for event in ranked_departures {
+            self.handle_ranked_departure(event).await;
         }
 
         Ok(room_ids)
@@ -742,6 +795,10 @@ impl AppState {
             .iter_mut()
             .find(|lobby| lobby.players().iter().any(|p| p.addr() == addr.to_string()))
             .ok_or("Lobby not found".to_string())?;
+
+        if lobby.kind() == LobbyKind::Ranked {
+            return Err("Ranked matches start automatically".to_string());
+        }
 
         let is_host = lobby
             .players()
@@ -883,6 +940,10 @@ impl AppState {
             .iter_mut()
             .find(|l| l.players().iter().any(|p| p.addr() == addr.to_string()))
             .ok_or("Lobby not found".to_string())?;
+
+        if lobby.kind() == LobbyKind::Ranked {
+            return Err("Ranked settings can't change".to_string());
+        }
 
         if !lobby
             .players()

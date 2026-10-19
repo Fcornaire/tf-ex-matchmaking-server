@@ -29,7 +29,10 @@ impl AppState {
     }
 
     pub async fn send_msg_to_addrs(&self, addrs: &[String], msg: ServerMsg) {
-        let quiet = matches!(msg, ServerMsg::QuickPlayStatus { .. });
+        let quiet = matches!(
+            msg,
+            ServerMsg::QuickPlayStatus { .. } | ServerMsg::RankedStatus { .. }
+        );
 
         let targets: Vec<_> = {
             let connexions = self.connections.lock().await;
@@ -55,9 +58,17 @@ impl AppState {
     }
 
     pub(super) async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
+        if matches!(msg, ServerMsg::LobbyUpdate { .. })
+            && self.is_lobby_update_held(&lobby.room_id()).await
+        {
+            return;
+        }
+
         let is_quiet_msg = matches!(
             msg,
-            ServerMsg::QuickPlayStatus { .. } | ServerMsg::SkinChunk { .. }
+            ServerMsg::QuickPlayStatus { .. }
+                | ServerMsg::RankedStatus { .. }
+                | ServerMsg::SkinChunk { .. }
         );
 
         let targets: Vec<_> = {

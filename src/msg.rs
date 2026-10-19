@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::lobby::{GameData, Lobby, Mod, Player};
+use crate::state::{
+    leaderboard::LeaderboardEntry,
+    lobby::{GameData, Lobby, Mod, Player},
+};
 
 #[derive(Debug, Serialize, Clone)]
 pub enum ServerMsg {
     KeepAlive {},
     GetLobbiesResponse {
         lobbies: Vec<Lobby>,
+    },
+    Leaderboard {
+        entries: Vec<LeaderboardEntry>,
+        own: Option<LeaderboardEntry>,
+        around: Vec<LeaderboardEntry>,
+        total: u32,
     },
     CreateLobbyResponse {
         success: bool,
@@ -46,6 +55,17 @@ pub enum ServerMsg {
         lobby: Lobby,
         room_peer_id: String,
     },
+    RankedStatus {
+        queued: bool,
+        searching_standard: u32,
+        searching_wide: u32,
+        message: String,
+    },
+    RankedMatchFound {
+        lobby: Lobby,
+        room_peer_id: String,
+    },
+    RankedReady {},
     SpectatorJoined {
         room_peer_id: String,
     },
@@ -69,6 +89,7 @@ impl ServerMsg {
         match self {
             Self::KeepAlive {} => "KeepAlive",
             Self::GetLobbiesResponse { .. } => "GetLobbiesResponse",
+            Self::Leaderboard { .. } => "Leaderboard",
             Self::CreateLobbyResponse { .. } => "CreateLobbyResponse",
             Self::JoinLobbyResponse { .. } => "JoinLobbyResponse",
             Self::LobbyUpdate { .. } => "LobbyUpdate",
@@ -80,6 +101,9 @@ impl ServerMsg {
             Self::PrivateJoinResult { .. } => "PrivateJoinResult",
             Self::QuickPlayStatus { .. } => "QuickPlayStatus",
             Self::QuickPlayMatchFound { .. } => "QuickPlayMatchFound",
+            Self::RankedStatus { .. } => "RankedStatus",
+            Self::RankedMatchFound { .. } => "RankedMatchFound",
+            Self::RankedReady {} => "RankedReady",
             Self::SpectatorJoined { .. } => "SpectatorJoined",
             Self::SkinChunk { .. } => "SkinChunk",
             Self::KickedFromLobby { .. } => "KickedFromLobby",
@@ -106,6 +130,7 @@ pub enum ClientMsg {
         name: String,
     },
     GetLobbies {},
+    GetLeaderboard {},
     CreateLobby {
         lobby: Lobby,
     },
@@ -151,6 +176,12 @@ pub enum ClientMsg {
         is_wide: bool,
     },
     ExitQuickPlay {},
+    EnterRanked {
+        name: String,
+        #[serde(default)]
+        is_wide: bool,
+    },
+    ExitRanked {},
     SkinChunk {
         chunk: SkinChunk,
     },

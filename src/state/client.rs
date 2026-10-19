@@ -10,6 +10,7 @@ pub struct Client {
     pub alive_counter: u8,
     last_keep_alive_sent: Option<Instant>,
     pub last_private_join_attempt: Option<Instant>,
+    pub last_leaderboard_request: Option<Instant>,
     pub player_id: Option<String>,
 }
 
@@ -22,6 +23,7 @@ impl Client {
             alive_counter: 0,
             last_keep_alive_sent: None,
             last_private_join_attempt: None,
+            last_leaderboard_request: None,
             player_id: None,
         }
     }

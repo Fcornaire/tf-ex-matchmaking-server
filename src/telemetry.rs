@@ -23,6 +23,8 @@ pub const GAMES_ACTIVE: &str = "tfex_games_active";
 pub const PLAYERS_SEATED: &str = "tfex_players_seated";
 pub const SPECTATORS: &str = "tfex_spectators";
 pub const QUICKPLAY_QUEUE_DEPTH: &str = "tfex_quickplay_queue_depth";
+pub const RANKED_QUEUE_DEPTH: &str = "tfex_ranked_queue_depth";
+pub const RANKED_CONNECTIONS_TOTAL: &str = "tfex_ranked_connections_total";
 pub const SIGNALING_ROOMS: &str = "tfex_signaling_rooms";
 pub const SIGNALING_PEERS: &str = "tfex_signaling_peers";
 pub const RELAY_ROOMS: &str = "tfex_relay_rooms";
@@ -45,6 +47,7 @@ pub const RATING_RATED_TOTAL: &str = "tfex_rating_rated_matches_total";
 pub const RATING_UNRATED_TOTAL: &str = "tfex_rating_unrated_matches_total";
 pub const MATCH_REPORTS_DROPPED_TOTAL: &str = "tfex_match_reports_dropped_total";
 pub const PLAYER_RATING: &str = "tfex_player_rating";
+pub const PLAYER_ABANDONS: &str = "tfex_player_abandons";
 pub const MATCH_REPORTS_PENDING: &str = "tfex_match_reports_pending";
 pub const PLAYERS_TOTAL: &str = "tfex_players_total";
 pub const PLAYERS_ACTIVE: &str = "tfex_players_active";
@@ -64,6 +67,7 @@ pub fn kind_label(kind: LobbyKind) -> &'static str {
         LobbyKind::Standard => "standard",
         LobbyKind::QuickPlay => "quickplay",
         LobbyKind::Private => "private",
+        LobbyKind::Ranked => "ranked",
     }
 }
 
@@ -129,6 +133,10 @@ fn describe() {
         QUICKPLAY_QUEUE_DEPTH,
         "Players waiting in the quickplay queue"
     );
+    describe_gauge!(
+        RANKED_QUEUE_DEPTH,
+        "Players waiting in the ranked queue by wide"
+    );
     describe_gauge!(SIGNALING_ROOMS, "Open WebRTC signaling rooms");
     describe_gauge!(SIGNALING_PEERS, "Peers connected to the signaling endpoint");
     describe_gauge!(RELAY_ROOMS, "Rooms with members on the relay");
@@ -139,7 +147,11 @@ fn describe() {
     );
     describe_gauge!(
         PLAYER_RATING,
-        "Hidden rating of the current top players, by player_id and name"
+        "Rating of the current top players by ladder, player_id and name"
+    );
+    describe_gauge!(
+        PLAYER_ABANDONS,
+        "Abandons of the players who abandon most by ladder, player_id and name"
     );
     describe_gauge!(
         MATCH_REPORTS_PENDING,
@@ -163,6 +175,10 @@ fn describe() {
         "Matchmaking websocket disconnections, by reason"
     );
     describe_counter!(LOBBIES_CREATED_TOTAL, "Lobbies created, by kind");
+    describe_counter!(
+        RANKED_CONNECTIONS_TOTAL,
+        "Ranked pairs after their connection check by outcome (ready, failed, left)"
+    );
     describe_counter!(JOINS_TOTAL, "Members seated into lobbies, by role");
     describe_counter!(QUICKPLAY_ENTER_TOTAL, "Quickplay entries, by outcome");
     describe_counter!(

@@ -9,6 +9,7 @@ pub const MAX_PLAYERS: usize = 4;
 
 /// How long players get to pick an end match option before the undecided ones are dropped
 pub static END_GAME_CHOICE_SECONDS: u64 = 30;
+pub static RANKED_END_GAME_CHOICE_SECONDS: u64 = 10;
 
 pub static PRIVATE_JOIN_COOLDOWN_SECS: u64 = 3;
 
@@ -32,6 +33,9 @@ pub const SERIES_TOWER_COUNT: i32 = 16;
 
 /// `TowerFall.Modes.TeamDeathmatch`
 pub const TEAM_DEATHMATCH_MODE: i32 = 5;
+
+/// `TowerFall.Modes.LastManStanding`
+pub const LAST_MAN_STANDING_MODE: i32 = 3;
 
 pub const SERIES_TEAM_SIZE: usize = 2;
 
@@ -60,3 +64,21 @@ pub const DEFAULT_DRAIN_DEADLINE_SECS: u64 = 2640;
 pub const SERVER_UPDATED_MESSAGE: &str = "Server updated, try again";
 
 pub const DRAIN_REMINDER_SECS: [u64; 2] = [300, 60];
+
+
+
+
+pub const LEADERBOARD_COOLDOWN_SECS: u64 = 2;
+
+
+
+
+
+
+
+
+
+
+
+
+
