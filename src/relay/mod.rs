@@ -23,6 +23,7 @@ use crate::constants::{
 
 const RECEIVE_BUFFER_SIZE: usize = 65_536;
 const MAX_PACKETS_PER_SECOND: u32 = 8_000;
+const RELAYING_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Channel {
@@ -84,7 +85,8 @@ impl DropReason {
 #[derive(Debug, Clone, Copy)]
 pub struct RelayStats {
     pub rooms: usize,
-    pub members: usize,
+    pub relaying_rooms: usize,
+    pub relaying_members: usize,
     pub received: u64,
     pub forwarded: u64,
     dropped: [u64; DropReason::ALL.len()],
@@ -105,11 +107,17 @@ struct Member {
     events: UnboundedSender<ConnectionEvent>,
     rate_window_start: Instant,
     packets_in_window: u32,
+    last_relayed_at: Option<Instant>,
 }
 
 impl Member {
     fn is_confirmed(&self) -> bool {
         self.addr.is_some()
+    }
+
+    fn is_relaying(&self, now: Instant) -> bool {
+        self.last_relayed_at
+            .is_some_and(|at| now.duration_since(at) < RELAYING_WINDOW)
     }
 
     fn notify(&self, event: ConnectionEvent) {
@@ -363,6 +371,7 @@ impl Relay {
             events,
             rate_window_start: Instant::now(),
             packets_in_window: 0,
+            last_relayed_at: None,
         });
 
         tables.tokens.insert(token, key);
@@ -390,10 +399,27 @@ impl Relay {
 
     pub fn stats(&self) -> RelayStats {
         let tables = self.lock();
+        let now = Instant::now();
+        let mut relaying_rooms = 0;
+        let mut relaying_members = 0;
+
+        for members in tables.rooms.values() {
+            let relaying = members
+                .iter()
+                .filter(|member| member.is_relaying(now))
+                .count();
+
+            relaying_members += relaying;
+
+            if relaying > 0 {
+                relaying_rooms += 1;
+            }
+        }
 
         RelayStats {
             rooms: tables.rooms.len(),
-            members: tables.tokens.len(),
+            relaying_rooms,
+            relaying_members,
             received: self.counters.received.load(Ordering::Relaxed),
             forwarded: self.counters.forwarded.load(Ordering::Relaxed),
             dropped: DropReason::ALL
@@ -500,7 +526,9 @@ impl Relay {
             return Route::Dropped(DropReason::UnknownToken);
         };
 
-        if !members[index].is_under_rate_limit(Instant::now()) {
+        let now = Instant::now();
+
+        if !members[index].is_under_rate_limit(now) {
             return Route::Dropped(DropReason::RateLimited);
         }
 
@@ -520,6 +548,7 @@ impl Relay {
                 };
 
                 wire::write_downstream(out, members[index].id, payload);
+                members[index].last_relayed_at = Some(now);
 
                 Route::Forward(to)
             }
@@ -670,6 +699,10 @@ mod tests {
 
         peer_b.send(&relay, wire::PACKET_GAME, &[0, 8]).await;
         assert_eq!(peer_a.buffer().await, vec![wire::PACKET_GAME, 1, 8]);
+
+        let stats = relay.stats();
+        assert_eq!(stats.relaying_rooms, 1);
+        assert_eq!(stats.relaying_members, 2);
     }
 
     #[tokio::test]
@@ -694,6 +727,8 @@ mod tests {
 
         let stats = relay.stats();
         assert_eq!(stats.rooms, 2);
+        assert_eq!(stats.relaying_rooms, 0);
+        assert_eq!(stats.relaying_members, 0);
         assert_eq!(stats.forwarded, 0);
         assert_eq!(stats.dropped(DropReason::NoDestination), 2);
         assert_eq!(stats.dropped(DropReason::UnknownToken), 1);

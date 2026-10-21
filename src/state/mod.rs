@@ -216,8 +216,8 @@ impl AppState {
         if let Some(relay) = &self.relay {
             let stats = relay.stats();
 
-            gauge!(telemetry::RELAY_ROOMS).set(stats.rooms as f64);
-            gauge!(telemetry::RELAY_MEMBERS).set(stats.members as f64);
+            gauge!(telemetry::RELAY_ROOMS).set(stats.relaying_rooms as f64);
+            gauge!(telemetry::RELAY_MEMBERS).set(stats.relaying_members as f64);
             counter!(telemetry::RELAY_DATAGRAMS_TOTAL, "outcome" => "received")
                 .absolute(stats.received);
             counter!(telemetry::RELAY_DATAGRAMS_TOTAL, "outcome" => "forwarded")

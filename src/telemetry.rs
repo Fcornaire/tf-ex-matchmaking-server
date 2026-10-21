@@ -139,8 +139,14 @@ fn describe() {
     );
     describe_gauge!(SIGNALING_ROOMS, "Open WebRTC signaling rooms");
     describe_gauge!(SIGNALING_PEERS, "Peers connected to the signaling endpoint");
-    describe_gauge!(RELAY_ROOMS, "Rooms with members on the relay");
-    describe_gauge!(RELAY_MEMBERS, "Peers registered on the relay");
+    describe_gauge!(
+        RELAY_ROOMS,
+        "Rooms with packets forwarded by the relay in the last 10 s"
+    );
+    describe_gauge!(
+        RELAY_MEMBERS,
+        "Peers with packets forwarded by the relay in the last 10 s"
+    );
     describe_counter!(
         RELAY_DATAGRAMS_TOTAL,
         "Relay datagrams, by outcome (received, forwarded, dropped) and drop reason"
