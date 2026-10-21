@@ -327,13 +327,21 @@ impl AppState {
             storage
                 .update_or_insert_player(player_id.clone(), name)
                 .await?;
-            let rating = storage
-                .get_or_create_rating(player_id, Ladder::Casual)
+            let casual = storage
+                .get_or_create_rating(player_id.clone(), Ladder::Casual)
+                .await?;
+            let ranked = storage
+                .get_or_create_rating(player_id, Ladder::Ranked)
                 .await?;
 
             info!(
-                "{} ({}) identified (casual rating {:.0}, {} rated)",
-                rating.name, rating.id, rating.rating, rating.rated_count
+                "{} ({}) identified (casual rating {:.0}, {} rated | ranked rating {:.0}, {} rated)",
+                casual.name,
+                casual.id,
+                casual.rating,
+                casual.rated_count,
+                ranked.rating,
+                ranked.rated_count
             );
         }
 
