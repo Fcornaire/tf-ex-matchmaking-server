@@ -2,11 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{
-    leaderboard::LeaderboardEntry,
-    lobby::{GameData, Lobby, Mod, Player},
-    profile::PlayerProfile,
-};
+use crate::state::lobby::{GameData, Lobby, Mod, Player};
 
 #[derive(Debug, Serialize, Clone)]
 pub enum ServerMsg {
@@ -217,4 +213,84 @@ pub struct SeatStats {
     pub awards: Vec<i32>,
     #[serde(default)]
     pub raw_stats: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LeaderboardEntry {
+    pub rank: u32,
+    pub name: String,
+    pub rating: i32,
+    pub matches: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LeaderboardView {
+    pub entries: Vec<LeaderboardEntry>,
+    pub own: Option<LeaderboardEntry>,
+    pub around: Vec<LeaderboardEntry>,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlayerProfile {
+    pub rank: Option<u32>,
+    pub rating: Option<i32>,
+    pub series: Option<i64>,
+    #[serde(flatten)]
+    pub history: PlayerHistory,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StatTotal {
+    pub total: f64,
+    pub best: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ArcherPlays {
+    pub archer: i32,
+    pub archer_alt: i32,
+    pub custom_archer_id: String,
+    pub games: i64,
+    pub wins: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TowerPlays {
+    pub map_id: i32,
+    pub games: i64,
+    pub wins: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AwardCount {
+    pub award: i32,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MonthSummary {
+    pub month: i32,
+    pub games: i64,
+    pub wins: i64,
+    pub kills: i64,
+    pub deaths: i64,
+    pub seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlayerHistory {
+    pub name: String,
+    pub games: i64,
+    pub wins: i64,
+    pub kills: i64,
+    pub deaths: i64,
+    pub seconds: f64,
+    pub months: Vec<MonthSummary>,
+    pub ranked_months: Vec<MonthSummary>,
+    pub casual_months: Vec<MonthSummary>,
+    pub archers: Vec<ArcherPlays>,
+    pub best_towers: Vec<TowerPlays>,
+    pub awards: Vec<AwardCount>,
+    pub stats: BTreeMap<String, StatTotal>,
 }

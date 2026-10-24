@@ -12,8 +12,8 @@ use metrics_util::MetricKindMask;
 use tracing::{error, info};
 
 use crate::{
-    services::storage::unix_now,
     state::{lobby::LobbyKind, AppState},
+    time::unix_now,
 };
 
 pub const CLIENTS_CONNECTED: &str = "tfex_clients_connected";
@@ -23,8 +23,6 @@ pub const GAMES_ACTIVE: &str = "tfex_games_active";
 pub const PLAYERS_SEATED: &str = "tfex_players_seated";
 pub const SPECTATORS: &str = "tfex_spectators";
 pub const QUICKPLAY_QUEUE_DEPTH: &str = "tfex_quickplay_queue_depth";
-pub const RANKED_QUEUE_DEPTH: &str = "tfex_ranked_queue_depth";
-pub const RANKED_CONNECTIONS_TOTAL: &str = "tfex_ranked_connections_total";
 pub const SIGNALING_ROOMS: &str = "tfex_signaling_rooms";
 pub const SIGNALING_PEERS: &str = "tfex_signaling_peers";
 pub const RELAY_ROOMS: &str = "tfex_relay_rooms";
@@ -42,17 +40,8 @@ pub const END_GAME_OUTCOMES_TOTAL: &str = "tfex_end_game_outcomes_total";
 pub const SERIES_OUTCOMES_TOTAL: &str = "tfex_series_outcomes_total";
 pub const PRIVATE_JOIN_FAILURES_TOTAL: &str = "tfex_private_join_failures_total";
 pub const GEOIP_FAILURES_TOTAL: &str = "tfex_geoip_failures_total";
-pub const RATING_REPORTS_TOTAL: &str = "tfex_rating_reports_total";
-pub const RATING_RATED_TOTAL: &str = "tfex_rating_rated_matches_total";
-pub const RATING_UNRATED_TOTAL: &str = "tfex_rating_unrated_matches_total";
 pub const MATCH_REPORTS_DROPPED_TOTAL: &str = "tfex_match_reports_dropped_total";
-pub const GAME_STATS_TOTAL: &str = "tfex_game_stats_total";
-pub const PLAYER_RATING: &str = "tfex_player_rating";
-pub const PLAYER_ABANDONS: &str = "tfex_player_abandons";
 pub const MATCH_REPORTS_PENDING: &str = "tfex_match_reports_pending";
-pub const PLAYERS_TOTAL: &str = "tfex_players_total";
-pub const PLAYERS_ACTIVE: &str = "tfex_players_active";
-pub const RATED_MATCHES_RECENT: &str = "tfex_rated_matches_recent";
 pub const START_TIME_SECONDS: &str = "tfex_start_time_seconds";
 pub const DRAINING: &str = "tfex_draining";
 
@@ -134,10 +123,6 @@ fn describe() {
         QUICKPLAY_QUEUE_DEPTH,
         "Players waiting in the quickplay queue"
     );
-    describe_gauge!(
-        RANKED_QUEUE_DEPTH,
-        "Players waiting in the ranked queue by wide"
-    );
     describe_gauge!(SIGNALING_ROOMS, "Open WebRTC signaling rooms");
     describe_gauge!(SIGNALING_PEERS, "Peers connected to the signaling endpoint");
     describe_gauge!(
@@ -153,22 +138,8 @@ fn describe() {
         "Relay datagrams, by outcome (received, forwarded, dropped) and drop reason"
     );
     describe_gauge!(
-        PLAYER_RATING,
-        "Rating of the current top players by ladder, player_id and name"
-    );
-    describe_gauge!(
-        PLAYER_ABANDONS,
-        "Abandons of the players who abandon most by ladder, player_id and name"
-    );
-    describe_gauge!(
         MATCH_REPORTS_PENDING,
         "Matches waiting for the remaining players' result reports"
-    );
-    describe_gauge!(PLAYERS_TOTAL, "Players known to the rating storage");
-    describe_gauge!(PLAYERS_ACTIVE, "Players identified within the window");
-    describe_gauge!(
-        RATED_MATCHES_RECENT,
-        "Rated matches recorded within the window"
     );
     describe_gauge!(START_TIME_SECONDS, "Unix time the server process started");
     describe_gauge!(DRAINING, "1 while the server drains before exiting");
@@ -182,10 +153,6 @@ fn describe() {
         "Matchmaking websocket disconnections, by reason"
     );
     describe_counter!(LOBBIES_CREATED_TOTAL, "Lobbies created, by kind");
-    describe_counter!(
-        RANKED_CONNECTIONS_TOTAL,
-        "Ranked pairs after their connection check by outcome (ready, failed, left)"
-    );
     describe_counter!(JOINS_TOTAL, "Members seated into lobbies, by role");
     describe_counter!(QUICKPLAY_ENTER_TOTAL, "Quickplay entries, by outcome");
     describe_counter!(
@@ -208,22 +175,6 @@ fn describe() {
     describe_counter!(
         GEOIP_FAILURES_TOTAL,
         "Connections dropped because the geoip lookup failed"
-    );
-    describe_counter!(
-        RATING_REPORTS_TOTAL,
-        "Completed match reports reaching rating, by outcome and skip reason"
-    );
-    describe_counter!(
-        GAME_STATS_TOTAL,
-        "Completed match reports with game stats, by outcome"
-    );
-    describe_counter!(
-        RATING_RATED_TOTAL,
-        "Matches or series that updated ratings, by pairing weight"
-    );
-    describe_counter!(
-        RATING_UNRATED_TOTAL,
-        "Matches or series recorded without a rating update, by reason"
     );
     describe_counter!(
         MATCH_REPORTS_DROPPED_TOTAL,

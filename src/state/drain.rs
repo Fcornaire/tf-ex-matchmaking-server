@@ -55,7 +55,7 @@ impl AppState {
         )
         .await;
 
-        self.close_ranked_queue().await;
+        self.ranking.on_drain_start(self).await;
 
         self.close_unseated_connections().await;
     }

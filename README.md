@@ -1,4 +1,4 @@
-# tf-matchmaking-server
+# tf-ex-matchmaking-server
 
 Matchmaking and WebRTC signaling server for **TF.EX**, the TowerFall Ascension netplay mod.
 
@@ -23,24 +23,27 @@ cargo run --release
 Or with Docker:
 
 ```sh
-docker build -t tf-matchmaking-server .
-docker run -p 3000:3000 tf-matchmaking-server
+docker build -t tf-ex-matchmaking-server .
+docker run -p 3000:3000 tf-ex-matchmaking-server
 ```
 
 ## Configuration
 
 Everything is configured through environment variables. All of them are optional:
 
-| Variable             | Default   | Purpose                                               |
-| -------------------- | --------- | ----------------------------------------------------- |
-| `PORT`               | `3000`    | Game-facing port (matchmaking + signaling websockets) |
-| `METRICS_PORT`       | `4738`    | Prometheus metrics port (keep it private)             |
-| `GEOIP_CLIENT_ID`    | _(unset)_ | MaxMind account ID — enables GeoIP                    |
-| `GEOIP_API_KEY`      | _(unset)_ | MaxMind license key — enables GeoIP                   |
-| `RELAY_PORT`         | `4537`    | UDP port of the relay                                 |
-| `REPORTS_DIR`        | _(unset)_ | Folder for crash/desync reports, unset to disable     |
-| `REPORTS_MAX_MB`     | `750`     | Size cap of the reports folder                        |
-| `MIN_CLIENT_VERSION` | `0.0.0`   | Oldest TF.EX version allowed to connect               |
+| Variable                | Default                | Purpose                                                                    |
+| ----------------------- | ---------------------- | -------------------------------------------------------------------------- |
+| `PORT`                  | `3000`                 | Game-facing port (matchmaking + signaling websockets)                      |
+| `METRICS_PORT`          | `4738`                 | Prometheus metrics port (keep it private)                                  |
+| `GEOIP_CLIENT_ID`       | _(unset)_              | MaxMind account ID — enables GeoIP                                         |
+| `GEOIP_API_KEY`         | _(unset)_              | MaxMind license key — enables GeoIP                                        |
+| `RELAY_PORT`            | `4537`                 | UDP port of the relay                                                      |
+| `REPORTS_DIR`           | _(unset)_              | Folder for crash/desync reports, unset to disable                          |
+| `REPORTS_MAX_MB`        | `750`                  | Size cap of the reports folder                                             |
+| `MIN_CLIENT_VERSION`    | `0.0.0`                | Oldest TF.EX version allowed to connect                                    |
+| `RELAY_PUBLIC_PORTS`    | _(unset)_              | UDP port(s) players reach the relay on, when it sits behind a port mapping |
+| `RELAY_PORT_CHECK_HOST` | `host.docker.internal` | Host used to find the public relay port within `RELAY_PUBLIC_PORTS`        |
+| `DRAIN_DEADLINE_SECS`   | `2640`                 | On SIGTERM, how long running games may finish before the server exits      |
 
 ## Relay (optional)
 
@@ -92,6 +95,7 @@ All metrics are prefixed `tfex_`.
 | -------------------------------------- | -------------- | ---------------------------------------------------------------------- |
 | `GET /ws`                              | `PORT`         | Matchmaking websocket (lobby browser, quickplay, chat with the server) |
 | `GET /room/:room_id`                   | `PORT`         | WebRTC signaling room for one lobby                                    |
+| `GET /ping_measurement/:room_id`       | `PORT`         | Lobby ping measurement between players                                 |
 | `GET /relay/room/:room_id`             | `PORT`         | Relay connection for one lobby (data over UDP `RELAY_PORT`)            |
 | `GET /relay/ping_measurement/:room_id` | `PORT`         | Lobby ping measurement through the relay                               |
 | `POST /report`                         | `PORT`         | Crash/desync report upload                                             |
@@ -124,6 +128,13 @@ public static readonly string SERVER = "ws://127.0.0.1:3000";
 ```
 
 Set it to your server and rebuild the mod.
+
+## Ranked, leaderboard and profiles
+
+The official TF.EX server runs this code plus a private ranking module
+
+To add your own ranking, implement the `Ranking` trait
+More info at [docs/RANKING.md](docs/RANKING.md)
 
 ## Development
 

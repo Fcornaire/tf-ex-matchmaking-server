@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use tokio::sync::{Mutex, MutexGuard};
 
-use super::{quickplay::QuickplayQueued, ranked::RankedQueue};
+use super::quickplay::QuickplayQueued;
 
 pub trait QueueEntry {
     fn addr(&self) -> SocketAddr;
@@ -56,5 +56,4 @@ impl<T: QueueEntry> Queue<T> {
 #[derive(Debug, Clone, Default)]
 pub struct Queues {
     pub quick_play: Queue<QuickplayQueued>,
-    pub ranked: RankedQueue,
 }

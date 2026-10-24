@@ -5,13 +5,10 @@ pub mod connectivity;
 pub mod countdown;
 pub mod drain;
 pub mod end_game;
-pub mod leaderboard;
 pub mod lobby;
-pub mod profile;
+pub mod match_report;
 pub mod queue;
 pub mod quickplay;
-pub mod ranked;
-pub mod rating;
 pub mod series;
 pub mod signaling_state;
 
@@ -21,24 +18,22 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{atomic::AtomicBool, Arc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum_typed_websockets::Message;
 use metrics::{counter, gauge, histogram};
 use rand::Rng;
-use tokio::sync::{mpsc::Sender, Mutex, RwLock};
+use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::{info, warn};
 
 use crate::{
-    constants::SERVER_UPDATED_MESSAGE,
-    msg::ServerMsg,
+    constants::{LEADERBOARD_COOLDOWN_SECS, PROFILE_COOLDOWN_MS, SERVER_UPDATED_MESSAGE},
+    msg::{LeaderboardView, PlayerProfile, ServerMsg},
+    ranking::{NoRanking, Ranking},
     relay::{DropReason, Relay},
     reports::Reports,
-    services::{
-        geoip::GeoipClient,
-        storage::{Ladder, RatingConfig, Storage},
-    },
+    services::geoip::GeoipClient,
     state::lobby::{LobbyBuilder, LobbyKind},
     telemetry,
     version::ExVersion,
@@ -46,7 +41,7 @@ use crate::{
 
 use self::{
     client::{Client, Room},
-    lobby::{GameData, Lobby, Mod, Player},
+    lobby::{Departure, GameData, Lobby, Mod, Player},
     series::SeriesStatus,
     signaling_state::SignalingState,
 };
@@ -61,26 +56,20 @@ pub struct AppState {
     geoip_client: GeoipClient,
     pub signaling: Arc<Mutex<SignalingState>>,
     pub ping_measurement_signaling: Arc<Mutex<SignalingState>>,
-    lobbies: Lobbies,
+    pub lobbies: Lobbies,
     connections: Arc<Mutex<HashMap<SocketAddr, Sender<Message<ServerMsg>>>>>,
-    countdowns: countdown::Countdowns,
-    queues: queue::Queues,
-    storage: Option<Arc<Storage>>,
-    match_reports: Arc<Mutex<HashMap<String, rating::PendingReports>>>,
-    leaderboard: Arc<RwLock<leaderboard::Leaderboard>>,
-    rating_config: RatingConfig,
+    pub countdowns: countdown::Countdowns,
+    pub queues: queue::Queues,
+    match_reports: Arc<Mutex<HashMap<String, match_report::PendingReports>>>,
     relay: Option<Arc<Relay>>,
     reports: Option<Arc<Reports>>,
     draining: Arc<AtomicBool>,
     min_client_version: Option<ExVersion>,
+    ranking: Arc<dyn Ranking>,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        Self::new_with_storage(None)
-    }
-
-    pub fn new_with_storage(storage: Option<Arc<Storage>>) -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
             geoip_client: GeoipClient::new(),
@@ -90,14 +79,12 @@ impl AppState {
             connections: Arc::new(Mutex::new(HashMap::new())),
             countdowns: countdown::Countdowns::default(),
             queues: queue::Queues::default(),
-            storage,
             match_reports: Arc::new(Mutex::new(HashMap::new())),
-            leaderboard: Arc::new(RwLock::new(leaderboard::Leaderboard::default())),
-            rating_config: RatingConfig::from_env(),
             relay: None,
             reports: None,
             draining: Arc::new(AtomicBool::new(false)),
             min_client_version: None,
+            ranking: Arc::new(NoRanking),
         }
     }
 
@@ -108,6 +95,15 @@ impl AppState {
 
     pub fn relay(&self) -> Option<Arc<Relay>> {
         self.relay.clone()
+    }
+
+    pub fn with_ranking(mut self, ranking: Arc<dyn Ranking>) -> Self {
+        self.ranking = ranking;
+        self
+    }
+
+    pub fn ranking(&self) -> Arc<dyn Ranking> {
+        self.ranking.clone()
     }
 
     pub fn with_min_client_version(mut self, version: ExVersion) -> Self {
@@ -128,18 +124,12 @@ impl AppState {
         self.reports.clone()
     }
 
-    #[allow(dead_code)]
-    pub fn storage(&self) -> Option<Arc<Storage>> {
-        self.storage.clone()
-    }
-
     pub fn lobbies(&self) -> Lobbies {
         self.lobbies.clone()
     }
 
     pub async fn publish_metrics_gauges(&self) {
         let quick_play_counts = self.queues.quick_play.counts().await;
-        let ranked_counts = self.queues.ranked.queue.counts().await;
 
         let kinds = [
             LobbyKind::Standard,
@@ -196,8 +186,6 @@ impl AppState {
             .set(quick_play_counts.wide as f64);
         gauge!(telemetry::QUICKPLAY_QUEUE_DEPTH, "wide" => "false")
             .set(quick_play_counts.standard as f64);
-        gauge!(telemetry::RANKED_QUEUE_DEPTH, "wide" => "true").set(ranked_counts.wide as f64);
-        gauge!(telemetry::RANKED_QUEUE_DEPTH, "wide" => "false").set(ranked_counts.standard as f64);
 
         for (slot, kind) in kinds.iter().enumerate() {
             let label = telemetry::kind_label(*kind);
@@ -237,49 +225,7 @@ impl AppState {
         let pending_reports = self.match_reports.lock().await.len();
         gauge!(telemetry::MATCH_REPORTS_PENDING).set(pending_reports as f64);
 
-        if let Some(storage) = &self.storage {
-            for ladder in [Ladder::Casual, Ladder::Ranked] {
-                match storage.top_players(ladder, 20).await {
-                    Ok(top) => {
-                        for (player_id, name, rating) in top {
-                            gauge!(telemetry::PLAYER_RATING, "player_id" => player_id, "name" => name, "ladder" => ladder.as_str())
-                                .set(rating);
-                        }
-                    }
-                    Err(err) => {
-                        info!("Could not publish top players : {}", err);
-                    }
-                }
-
-                match storage.top_abandons(ladder, 20).await {
-                    Ok(top) => {
-                        for (player_id, name, abandons) in top {
-                            gauge!(telemetry::PLAYER_ABANDONS, "player_id" => player_id, "name" => name, "ladder" => ladder.as_str())
-                                .set(abandons as f64);
-                        }
-                    }
-                    Err(err) => {
-                        info!("Could not publish top abandons : {}", err);
-                    }
-                }
-            }
-
-            match storage.community_stats().await {
-                Ok(stats) => {
-                    gauge!(telemetry::PLAYERS_TOTAL).set(stats.players_total as f64);
-                    gauge!(telemetry::PLAYERS_ACTIVE, "window" => "24h")
-                        .set(stats.active_24h as f64);
-                    gauge!(telemetry::PLAYERS_ACTIVE, "window" => "7d").set(stats.active_7d as f64);
-                    gauge!(telemetry::RATED_MATCHES_RECENT, "window" => "24h")
-                        .set(stats.rated_24h as f64);
-                    gauge!(telemetry::RATED_MATCHES_RECENT, "window" => "7d")
-                        .set(stats.rated_7d as f64);
-                }
-                Err(err) => {
-                    info!("Could not publish community stats : {}", err);
-                }
-            }
-        }
+        self.ranking.publish_metrics(self).await;
     }
 
     pub async fn client_label(&self, addr: SocketAddr) -> String {
@@ -324,29 +270,61 @@ impl AppState {
             client.name = name.clone();
         }
 
-        if let Some(storage) = &self.storage {
-            storage
-                .update_or_insert_player(player_id.clone(), name)
-                .await?;
-            let casual = storage
-                .get_or_create_rating(player_id.clone(), Ladder::Casual)
-                .await?;
-            let ranked = storage
-                .get_or_create_rating(player_id, Ladder::Ranked)
-                .await?;
-
-            info!(
-                "{} ({}) identified (casual rating {:.0}, {} rated | ranked rating {:.0}, {} rated)",
-                casual.name,
-                casual.id,
-                casual.rating,
-                casual.rated_count,
-                ranked.rating,
-                ranked.rated_count
-            );
-        }
+        self.ranking.on_identified(self, &player_id, &name).await?;
 
         Ok(())
+    }
+
+    pub async fn leaderboard_for(&self, addr: SocketAddr) -> Option<LeaderboardView> {
+        let player_id = self
+            .player_id_or_cooled(
+                addr,
+                |client| &mut client.last_leaderboard_request,
+                Duration::from_secs(LEADERBOARD_COOLDOWN_SECS),
+            )
+            .await?;
+
+        Some(self.ranking.leaderboard(self, player_id).await)
+    }
+
+    pub async fn player_profile_for(
+        &self,
+        addr: SocketAddr,
+        rank: Option<u32>,
+    ) -> Option<PlayerProfile> {
+        let player_id = self
+            .player_id_or_cooled(
+                addr,
+                |client| &mut client.last_profile_request,
+                Duration::from_millis(PROFILE_COOLDOWN_MS),
+            )
+            .await?;
+
+        self.ranking.player_profile(self, player_id, rank).await
+    }
+
+    async fn player_id_or_cooled(
+        &self,
+        addr: SocketAddr,
+        last_request: fn(&mut Client) -> &mut Option<Instant>,
+        cooldown: Duration,
+    ) -> Option<Option<String>> {
+        let mut clients = self.clients.lock().await;
+
+        let client = clients
+            .iter_mut()
+            .find(|((ipv4, ipv6), _)| *ipv4 == addr || *ipv6 == Some(addr))
+            .map(|(_, client)| client)?;
+
+        let last = last_request(client);
+
+        if last.is_some_and(|at| at.elapsed() < cooldown) {
+            return None;
+        }
+
+        *last = Some(Instant::now());
+
+        Some(client.player_id.clone())
     }
 
     pub async fn update_alive_client(&self, addr: SocketAddr) -> Result<(), String> {
@@ -686,7 +664,7 @@ impl AppState {
     pub async fn remove_from_lobby(
         &self,
         addr: SocketAddr,
-        departure: ranked::Departure,
+        departure: Departure,
     ) -> Result<Vec<String>, String> {
         let room_ids = self.remove_from_lobbies(addr, None, departure).await?;
 
@@ -699,7 +677,7 @@ impl AppState {
 
     pub async fn leave_stale_lobbies(&self, addr: SocketAddr, keep_room_id: Option<&str>) {
         let room_ids = match self
-            .remove_from_lobbies(addr, keep_room_id, ranked::Departure::Left)
+            .remove_from_lobbies(addr, keep_room_id, Departure::Left)
             .await
         {
             Ok(room_ids) if !room_ids.is_empty() => room_ids,
@@ -725,7 +703,7 @@ impl AppState {
         &self,
         addr: SocketAddr,
         keep_room_id: Option<&str>,
-        departure: ranked::Departure,
+        departure: Departure,
     ) -> Result<Vec<String>, String> {
         let mut lobbies = self.lobbies.lock().await;
         let mut clients = self.clients.lock().await;
@@ -739,7 +717,7 @@ impl AppState {
 
         let member = addr.to_string();
         let mut room_ids = vec![];
-        let mut ranked_departures = vec![];
+        let mut departure_events = vec![];
 
         for lobby in lobbies
             .iter_mut()
@@ -747,9 +725,10 @@ impl AppState {
         {
             let series_running = lobby.series_in_progress();
 
-            ranked_departures.extend(ranked::settle_departure(
-                lobby, &member, &clients, departure,
-            ));
+            departure_events.extend(
+                self.ranking
+                    .settle_departure(lobby, &member, &clients, departure),
+            );
 
             lobby.remove_player_or_spectator(member.clone());
             lobby.promote_host_if_needed();
@@ -784,11 +763,9 @@ impl AppState {
         drop(clients);
         drop(lobbies);
 
-        self.note_departure(addr, departure).await;
-
-        for event in ranked_departures {
-            self.handle_ranked_departure(event).await;
-        }
+        self.ranking
+            .after_departure(self, addr, departure, departure_events)
+            .await;
 
         Ok(room_ids)
     }
@@ -998,8 +975,8 @@ impl AppState {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test_support {
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
     use std::net::SocketAddr;
 
     use crate::services::geoip::Location;

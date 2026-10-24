@@ -8,7 +8,6 @@ use tracing::error;
 use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
 use crate::services::geoip::Location;
 use crate::state::connectivity::{peers_of, Connectivity, ConnectivityUpdate, PeerPair};
-use crate::state::ranked::RankedSeat;
 use crate::state::series::Series;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,6 +55,21 @@ pub enum LobbyKind {
     QuickPlay,
     Private,
     Ranked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Departure {
+    Left,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RankedSeat {
+    pub seat: usize,
+    pub rating: i32,
+    pub provisional: bool,
+    pub delta: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

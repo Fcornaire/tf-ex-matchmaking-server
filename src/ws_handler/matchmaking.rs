@@ -25,7 +25,10 @@ use crate::{
     constants::KEEP_ALIVE_INTERVAL,
     extensions::{clients::ClientsExts, str::StrExts},
     msg::{ClientMsg, ServerMsg},
-    state::{lobby::Lobby, ranked::Departure, AppState, QuickPlayOutcome},
+    state::{
+        lobby::{Departure, Lobby},
+        AppState, QuickPlayOutcome,
+    },
     telemetry,
     version::ExVersion,
 };
@@ -274,7 +277,10 @@ pub async fn handle_socket(
                         info!("{} wants to create a lobby", who);
 
                         cloned_state_recv.exit_quick_play(ip).await;
-                        cloned_state_recv.exit_ranked(ip).await;
+                        cloned_state_recv
+                            .ranking()
+                            .exit_ranked(&cloned_state_recv, ip)
+                            .await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv.add_lobby(&mut lobby, ip).await {
@@ -309,7 +315,10 @@ pub async fn handle_socket(
                         info!("{who} wants to join lobby {room_id}, is a player {is_player}");
 
                         cloned_state_recv.exit_quick_play(ip).await;
-                        cloned_state_recv.exit_ranked(ip).await;
+                        cloned_state_recv
+                            .ranking()
+                            .exit_ranked(&cloned_state_recv, ip)
+                            .await;
                         cloned_state_recv
                             .leave_stale_lobbies(ip, Some(&room_id))
                             .await;
@@ -362,7 +371,10 @@ pub async fn handle_socket(
                     ClientMsg::EnterQuickPlay { name, is_wide } => {
                         info!("{who} entered the quickplay queue (wide: {is_wide})");
 
-                        cloned_state_recv.exit_ranked(ip).await;
+                        cloned_state_recv
+                            .ranking()
+                            .exit_ranked(&cloned_state_recv, ip)
+                            .await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         let outcome = cloned_state_recv.enter_quick_play(ip, name, is_wide).await;
@@ -478,7 +490,11 @@ pub async fn handle_socket(
 
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
-                        match cloned_state_recv.enter_ranked(ip, name, is_wide).await {
+                        match cloned_state_recv
+                            .ranking()
+                            .enter_ranked(&cloned_state_recv, ip, name, is_wide)
+                            .await
+                        {
                             Ok(Some(counts)) => {
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::RankedStatus {
@@ -509,7 +525,10 @@ pub async fn handle_socket(
                     ClientMsg::ExitRanked {} => {
                         info!("{} left the ranked queue", who);
 
-                        cloned_state_recv.exit_ranked(ip).await;
+                        cloned_state_recv
+                            .ranking()
+                            .exit_ranked(&cloned_state_recv, ip)
+                            .await;
 
                         send_task_in_rcv
                             .send(Message::Item(ServerMsg::RankedStatus {
@@ -531,7 +550,10 @@ pub async fn handle_socket(
                         );
 
                         cloned_state_recv.exit_quick_play(ip).await;
-                        cloned_state_recv.exit_ranked(ip).await;
+                        cloned_state_recv
+                            .ranking()
+                            .exit_ranked(&cloned_state_recv, ip)
+                            .await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv
@@ -870,7 +892,7 @@ pub async fn handle_socket(
     let who = state.client_label(ip).await;
 
     state.exit_quick_play(ip).await;
-    state.exit_ranked(ip).await;
+    state.ranking().exit_ranked(&state, ip).await;
 
     let mut clients = state.clone().clients.clone();
 
@@ -880,7 +902,7 @@ pub async fn handle_socket(
         .is_some_and(|cli| cli.room.is_some());
 
     let departure = if disconnect_reason == "timeout" {
-        state.note_connection_lost(ip).await;
+        state.ranking().note_connection_lost(&state, ip).await;
         Departure::Disconnected
     } else {
         Departure::Left

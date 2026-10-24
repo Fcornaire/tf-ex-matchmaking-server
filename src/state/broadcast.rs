@@ -57,9 +57,12 @@ impl AppState {
         }
     }
 
-    pub(super) async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
+    pub async fn send_msg_to_lobby(&self, lobby: Lobby, msg: ServerMsg) {
         if matches!(msg, ServerMsg::LobbyUpdate { .. })
-            && self.is_lobby_update_held(&lobby.room_id()).await
+            && self
+                .ranking
+                .is_lobby_update_held(self, &lobby.room_id())
+                .await
         {
             return;
         }

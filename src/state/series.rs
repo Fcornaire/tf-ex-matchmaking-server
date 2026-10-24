@@ -327,14 +327,7 @@ impl AppState {
     }
 
     pub async fn try_start_series_game(&self, room_id: String) {
-        if self
-            .queues
-            .ranked
-            .pending
-            .lock()
-            .await
-            .contains_key(&room_id)
-        {
+        if self.ranking.is_series_start_held(self, &room_id).await {
             return;
         }
 
@@ -412,7 +405,7 @@ impl AppState {
             .await;
     }
 
-    pub(super) async fn start_series_countdown(&self, room_id: String) {
+    pub async fn start_series_countdown(&self, room_id: String) {
         let generation = self.countdowns.series.start(&room_id).await;
 
         info!(

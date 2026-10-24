@@ -510,7 +510,7 @@ mod tests {
             .await;
 
         state
-            .remove_from_lobby(first, crate::state::ranked::Departure::Left)
+            .remove_from_lobby(first, crate::state::lobby::Departure::Left)
             .await
             .unwrap();
 
