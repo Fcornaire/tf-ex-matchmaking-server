@@ -49,7 +49,7 @@ pub type Identified = (usize, String, String);
 #[derive(Debug, Clone)]
 pub enum SeriesReport {
     NotSeries,
-    GameRecorded,
+    GameRecorded(Series),
     Aborted,
     Finished(Series),
 }
@@ -343,7 +343,7 @@ impl AppState {
             counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "finished").increment(1);
             SeriesReport::Finished(series.clone())
         } else {
-            SeriesReport::GameRecorded
+            SeriesReport::GameRecorded(series.clone())
         }
     }
 
