@@ -66,8 +66,8 @@ pub fn init_tracing() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .pretty()
-        // .with_file(true)
-        // .with_line_number(true)
+        .with_file(false)
+        .with_line_number(false)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
