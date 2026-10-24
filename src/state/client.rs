@@ -11,6 +11,7 @@ pub struct Client {
     last_keep_alive_sent: Option<Instant>,
     pub last_private_join_attempt: Option<Instant>,
     pub last_leaderboard_request: Option<Instant>,
+    pub last_profile_request: Option<Instant>,
     pub player_id: Option<String>,
 }
 
@@ -24,6 +25,7 @@ impl Client {
             last_keep_alive_sent: None,
             last_private_join_attempt: None,
             last_leaderboard_request: None,
+            last_profile_request: None,
             player_id: None,
         }
     }

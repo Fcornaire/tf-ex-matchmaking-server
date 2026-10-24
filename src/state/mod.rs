@@ -7,6 +7,7 @@ pub mod drain;
 pub mod end_game;
 pub mod leaderboard;
 pub mod lobby;
+pub mod profile;
 pub mod queue;
 pub mod quickplay;
 pub mod ranked;

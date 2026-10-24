@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
     leaderboard::LeaderboardEntry,
     lobby::{GameData, Lobby, Mod, Player},
+    profile::PlayerProfile,
 };
 
 #[derive(Debug, Serialize, Clone)]
@@ -16,6 +19,10 @@ pub enum ServerMsg {
         own: Option<LeaderboardEntry>,
         around: Vec<LeaderboardEntry>,
         total: u32,
+    },
+    PlayerProfile {
+        rank: Option<u32>,
+        profile: Option<PlayerProfile>,
     },
     CreateLobbyResponse {
         success: bool,
@@ -90,6 +97,7 @@ impl ServerMsg {
             Self::KeepAlive {} => "KeepAlive",
             Self::GetLobbiesResponse { .. } => "GetLobbiesResponse",
             Self::Leaderboard { .. } => "Leaderboard",
+            Self::PlayerProfile { .. } => "PlayerProfile",
             Self::CreateLobbyResponse { .. } => "CreateLobbyResponse",
             Self::JoinLobbyResponse { .. } => "JoinLobbyResponse",
             Self::LobbyUpdate { .. } => "LobbyUpdate",
@@ -131,6 +139,10 @@ pub enum ClientMsg {
     },
     GetLobbies {},
     GetLeaderboard {},
+    GetPlayerProfile {
+        #[serde(default)]
+        rank: Option<u32>,
+    },
     CreateLobby {
         lobby: Lobby,
     },
@@ -164,6 +176,10 @@ pub enum ClientMsg {
         checksum: Option<String>,
         #[serde(default)]
         scores: Option<Vec<i32>>,
+        #[serde(default)]
+        stats: Option<Vec<SeatStats>>,
+        #[serde(default)]
+        tower: Option<i32>,
     },
     JoinPrivate {
         code: String,
@@ -188,4 +204,17 @@ pub enum ClientMsg {
     PeerMeasured {
         room_peer_id: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeatStats {
+    pub seat: i32,
+    pub archer: i32,
+    pub archer_alt: i32,
+    #[serde(default)]
+    pub custom_archer_id: String,
+    #[serde(default)]
+    pub awards: Vec<i32>,
+    #[serde(default)]
+    pub raw_stats: BTreeMap<String, f64>,
 }

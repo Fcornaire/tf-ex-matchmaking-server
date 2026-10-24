@@ -46,6 +46,7 @@ pub const RATING_REPORTS_TOTAL: &str = "tfex_rating_reports_total";
 pub const RATING_RATED_TOTAL: &str = "tfex_rating_rated_matches_total";
 pub const RATING_UNRATED_TOTAL: &str = "tfex_rating_unrated_matches_total";
 pub const MATCH_REPORTS_DROPPED_TOTAL: &str = "tfex_match_reports_dropped_total";
+pub const GAME_STATS_TOTAL: &str = "tfex_game_stats_total";
 pub const PLAYER_RATING: &str = "tfex_player_rating";
 pub const PLAYER_ABANDONS: &str = "tfex_player_abandons";
 pub const MATCH_REPORTS_PENDING: &str = "tfex_match_reports_pending";
@@ -211,6 +212,10 @@ fn describe() {
     describe_counter!(
         RATING_REPORTS_TOTAL,
         "Completed match reports reaching rating, by outcome and skip reason"
+    );
+    describe_counter!(
+        GAME_STATS_TOTAL,
+        "Completed match reports with game stats, by outcome"
     );
     describe_counter!(
         RATING_RATED_TOTAL,

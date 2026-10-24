@@ -260,6 +260,16 @@ pub async fn handle_socket(
                                 .unwrap();
                         }
                     }
+                    ClientMsg::GetPlayerProfile { rank } => {
+                        debug!("{} requested the profile at rank {:?}", who, rank);
+
+                        let profile = cloned_state_recv.player_profile_for(ip, rank).await;
+
+                        send_task_in_rcv
+                            .send(Message::Item(ServerMsg::PlayerProfile { rank, profile }))
+                            .await
+                            .unwrap();
+                    }
                     ClientMsg::CreateLobby { mut lobby } => {
                         info!("{} wants to create a lobby", who);
 
@@ -681,10 +691,14 @@ pub async fn handle_socket(
                         frame,
                         checksum,
                         scores,
+                        stats,
+                        tower,
                     } => {
                         if let Some(seat) = winner_seat {
                             cloned_state_recv
-                                .handle_match_report(ip, seat, frame, checksum, scores)
+                                .handle_match_report(
+                                    ip, seat, frame, checksum, scores, stats, tower,
+                                )
                                 .await;
                         }
 

@@ -70,6 +70,10 @@ pub const DRAIN_REMINDER_SECS: [u64; 2] = [300, 60];
 
 pub const LEADERBOARD_COOLDOWN_SECS: u64 = 2;
 
+pub const PROFILE_COOLDOWN_MS: u64 = 250;
+
+
+
 
 
 
