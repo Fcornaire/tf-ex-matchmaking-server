@@ -67,7 +67,7 @@ Before any match, every pair of players must measure its ping
 
 Spectators try both paths and keep the relay only when they can't reach the host directly
 
-## GeoIP (optional — but recommended if you want quickplay by region)
+## GeoIP (optional but recommended if you want quickplay by region)
 
 Quickplay ranks candidate opponents by geographic distance. That distance comes from a GeoIP lookup of each connecting player's IP.
 

@@ -155,7 +155,10 @@ pub enum ClientMsg {
         game_data: GameData,
         mods: Vec<Mod>,
     },
-    LeaveLobby {},
+    LeaveLobby {
+        #[serde(default)]
+        link_lost: bool,
+    },
     RematchLobbyChoice {},
     StartLobbyChoice {},
     ArcherSelectChoice {},
