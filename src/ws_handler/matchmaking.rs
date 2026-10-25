@@ -661,13 +661,16 @@ pub async fn handle_socket(
                             }
                         }
                     }
-                    ClientMsg::LeaveLobby {} => {
-                        info!("{} wants to leave lobby", who);
+                    ClientMsg::LeaveLobby { link_lost } => {
+                        let departure = if link_lost {
+                            info!("{} wants to leave lobby, game connection lost", who);
+                            Departure::LinkLost
+                        } else {
+                            info!("{} wants to leave lobby", who);
+                            Departure::Left
+                        };
 
-                        match cloned_state_recv
-                            .remove_from_lobby(ip, Departure::Left)
-                            .await
-                        {
+                        match cloned_state_recv.remove_from_lobby(ip, departure).await {
                             Ok(room_ids) => {
                                 for room_id in room_ids {
                                     if let Err(err) =

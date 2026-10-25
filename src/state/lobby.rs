@@ -61,6 +61,7 @@ pub enum LobbyKind {
 pub enum Departure {
     Left,
     Disconnected,
+    LinkLost,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

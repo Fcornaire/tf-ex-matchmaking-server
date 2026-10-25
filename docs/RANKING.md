@@ -37,7 +37,7 @@ Every trait method has a default, so you only override what you need
 | `exit_ranked`                          | A player leaves the ranked queue                                                        |
 | `leaderboard` / `player_profile`       | A player opens the leaderboard or a profile                                             |
 | `on_match_reported`                    | A match finished in any lobby kind                                                      |
-| `settle_departure` / `after_departure` | A player leaves a lobby or disconnects from it                                          |
+| `settle_departure` / `after_departure` | A player leaves a lobby or disconnects from it (`Departure::LinkLost`: game link lost)  |
 | `note_connection_lost`                 | A player's connection times out (missed keep alives), before their departure is handled |
 | `is_lobby_update_held`                 | Before a lobby update is broadcast, return `true` to hold                               |
 | `is_series_start_held`                 | Before the next game of a series starts, return `true` to hold                          |
