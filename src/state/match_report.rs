@@ -79,14 +79,16 @@ impl AppState {
     ) {
         let addr_str = addr.to_string();
 
-        let (room_id, kind, seated, duration_secs, map_id, mode) = {
+        let (room_id, kind, seated, devices, duration_secs, map_id, mode) = {
             let lobbies = self.lobbies.lock().await;
 
             let Some(lobby) = lobbies.iter().find(|l| l.has_member(&addr_str)) else {
                 return;
             };
 
-            if lobby.players().len() < 2 {
+            let devices = lobby.seated_devices();
+
+            if devices < 2 {
                 return;
             }
 
@@ -100,6 +102,7 @@ impl AppState {
                 lobby.room_id(),
                 lobby.kind(),
                 seated,
+                devices,
                 lobby.match_duration_secs(),
                 lobby.game_data().map_id,
                 lobby.game_data().mode,
@@ -144,7 +147,7 @@ impl AppState {
                 tower,
             });
 
-            if entry.reports.len() >= seated.len() {
+            if entry.reports.len() >= devices {
                 pending.remove(&room_id)
             } else {
                 None
@@ -349,9 +352,12 @@ impl AppState {
 
     pub async fn identified_seats(&self, seated: &[Seated]) -> Vec<Identified> {
         let clients = self.clients.lock().await;
+        // Local players share their device's address: only its first player is identified
+        let mut identified_addrs = HashSet::new();
 
         seated
             .iter()
+            .filter(|(_, addr, _)| identified_addrs.insert(addr.as_str()))
             .filter_map(|(seat, addr, name)| {
                 clients
                     .iter()

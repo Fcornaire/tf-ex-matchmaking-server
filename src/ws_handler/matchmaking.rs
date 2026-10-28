@@ -792,6 +792,76 @@ pub async fn handle_socket(
                             }
                         }
                     }
+                    ClientMsg::AddLocalPlayer { player } => {
+                        info!("{} wants to add a local player", who);
+
+                        match cloned_state_recv.add_local_player(ip, player).await {
+                            Ok((room_id, seat)) => {
+                                info!("{} seated a local player at seat {}", who, seat);
+
+                                if let Err(err) = cloned_state_recv.send_lobby_update(room_id).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::AddLocalPlayerResponse {
+                                        success: true,
+                                        message: "".to_string(),
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                            Err(err) => {
+                                warn!("{} could not add a local player : {}", who, err);
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::AddLocalPlayerResponse {
+                                        success: false,
+                                        message: err,
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    ClientMsg::RemoveLocalPlayer { seat } => {
+                        info!("{} wants to remove its local player at seat {}", who, seat);
+
+                        match cloned_state_recv.remove_local_player(ip, seat).await {
+                            Ok(room_id) => {
+                                if let Err(err) = cloned_state_recv.send_lobby_update(room_id).await
+                                {
+                                    warn!(
+                                        "Could not send lobby update (lobby likely gone): {}",
+                                        err
+                                    );
+                                }
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::RemoveLocalPlayerResponse {
+                                        success: true,
+                                        message: "".to_string(),
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                            Err(err) => {
+                                warn!("{} could not remove its local player : {}", who, err);
+
+                                send_task_in_rcv
+                                    .send(Message::Item(ServerMsg::RemoveLocalPlayerResponse {
+                                        success: false,
+                                        message: err,
+                                    }))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
                     ClientMsg::PeerMeasured { room_peer_id } => {
                         cloned_state_recv
                             .record_peer_measured(ip, room_peer_id)

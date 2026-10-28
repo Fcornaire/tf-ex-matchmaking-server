@@ -38,6 +38,14 @@ pub enum ServerMsg {
         success: bool,
         message: String,
     },
+    AddLocalPlayerResponse {
+        success: bool,
+        message: String,
+    },
+    RemoveLocalPlayerResponse {
+        success: bool,
+        message: String,
+    },
     RematchLobby {},
     StartLobby {},
     ArcherSelectLobby {},
@@ -98,6 +106,8 @@ impl ServerMsg {
             Self::JoinLobbyResponse { .. } => "JoinLobbyResponse",
             Self::LobbyUpdate { .. } => "LobbyUpdate",
             Self::LeaveLobbyResponse { .. } => "LeaveLobbyResponse",
+            Self::AddLocalPlayerResponse { .. } => "AddLocalPlayerResponse",
+            Self::RemoveLocalPlayerResponse { .. } => "RemoveLocalPlayerResponse",
             Self::RematchLobby {} => "RematchLobby",
             Self::StartLobby {} => "StartLobby",
             Self::ArcherSelectLobby {} => "ArcherSelectLobby",
@@ -199,6 +209,12 @@ pub enum ClientMsg {
     ExitRanked {},
     SkinChunk {
         chunk: SkinChunk,
+    },
+    AddLocalPlayer {
+        player: Player,
+    },
+    RemoveLocalPlayer {
+        seat: usize,
     },
     PeerMeasured {
         room_peer_id: String,

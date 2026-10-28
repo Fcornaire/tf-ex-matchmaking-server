@@ -289,10 +289,58 @@ impl Lobby {
     }
 
     fn player_peers(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+
         self.players
             .iter()
             .map(|p| p.room_peer_id.clone())
+            .filter(|peer| seen.insert(peer.clone()))
             .collect()
+    }
+
+    pub fn seated_devices(&self) -> usize {
+        self.players
+            .iter()
+            .map(|p| p.addr.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+    }
+
+    pub fn add_local_player(&mut self, addr: &str, player: Player) -> Option<usize> {
+        let first = self.players.iter().find(|p| p.addr == addr)?.clone();
+
+        let name = if player.name.is_empty() {
+            first.name
+        } else {
+            player.name.clone()
+        };
+
+        self.add_player(Player {
+            name,
+            addr: first.addr,
+            room_peer_id: first.room_peer_id,
+            is_host: false,
+            ready: false,
+            ..player
+        });
+
+        self.players.last().map(|p| p.seat)
+    }
+
+    pub fn remove_local_player(&mut self, addr: &str, seat: usize) -> Result<(), String> {
+        let first = self.players.iter().position(|p| p.addr == addr);
+
+        let index = self
+            .players
+            .iter()
+            .position(|p| p.addr == addr && p.seat == seat)
+            .filter(|index| Some(*index) != first)
+            .ok_or(format!("No local player at seat {}", seat))?;
+
+        self.players.remove(index);
+        self.membership_changed_at = Some(Instant::now());
+
+        Ok(())
     }
 
     fn addr_of_peer(&self, peer: &str) -> Option<String> {
@@ -337,6 +385,10 @@ impl Lobby {
     fn series_sides(&self) -> Result<Vec<Vec<usize>>, String> {
         let mut seats: Vec<usize> = self.players.iter().map(|p| p.seat).collect();
         seats.sort_unstable();
+
+        if self.seated_devices() < 2 {
+            return Err("A series needs players on two devices".to_string());
+        }
 
         if seats.len() == 2 {
             return Ok(seats.into_iter().map(|seat| vec![seat]).collect());
@@ -471,16 +523,36 @@ impl Lobby {
 
     pub fn players_without_choice(&self) -> Vec<String> {
         let votes = self.live_end_game_votes();
+        let mut seen = HashSet::new();
 
         self.players
             .iter()
             .map(|p| p.addr())
             .filter(|addr| !votes.iter().any(|vote| vote.addr == *addr))
+            .filter(|addr| seen.insert(addr.clone()))
             .collect()
     }
 
     pub fn update_player(&mut self, addr: &str, player: Player) {
-        let Some(p) = self.players.iter_mut().find(|p| p.addr == addr) else {
+        let index = self
+            .players
+            .iter()
+            .position(|p| p.addr == addr && p.seat == player.seat)
+            .or_else(|| {
+                // Only a device with one player falls back: a removed local player's seat can't update another
+                let mut own = self
+                    .players
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.addr == addr);
+
+                match (own.next(), own.next()) {
+                    (Some((index, _)), None) => Some(index),
+                    _ => None,
+                }
+            });
+
+        let Some(p) = index.map(|index| &mut self.players[index]) else {
             return;
         };
 

@@ -599,6 +599,24 @@ impl AppState {
         Ok(())
     }
 
+    fn guard_seat_available(lobby: &Lobby) -> Result<(), String> {
+        let room_id = lobby.room_id();
+
+        if lobby.is_full() {
+            return Err(format!("Lobby {} is full", room_id));
+        }
+
+        if lobby.in_game() {
+            return Err(format!("Lobby {} already started", room_id));
+        }
+
+        if lobby.series_in_progress() {
+            return Err(format!("Lobby {} has a series running", room_id));
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn seat_member(
         &self,
         lobby: &mut Lobby,
@@ -609,17 +627,7 @@ impl AppState {
         let room_id = lobby.room_id();
 
         if is_player {
-            if lobby.is_full() {
-                return Err(format!("Lobby {} is full", room_id));
-            }
-
-            if lobby.in_game() {
-                return Err(format!("Lobby {} already started", room_id));
-            }
-
-            if lobby.series_in_progress() {
-                return Err(format!("Lobby {} has a series running", room_id));
-            }
+            Self::guard_seat_available(lobby)?;
         }
 
         let mut clients: tokio::sync::MutexGuard<'_, HashMap<IpV4V6, Client>> =
@@ -913,6 +921,66 @@ impl AppState {
         Ok(lobby.room_id())
     }
 
+    pub async fn add_local_player(
+        &self,
+        addr: SocketAddr,
+        player: Player,
+    ) -> Result<(String, usize), String> {
+        if self.is_draining() {
+            return Err(SERVER_UPDATED_MESSAGE.to_string());
+        }
+
+        let mut lobbies = self.lobbies.lock().await;
+
+        let addr = addr.to_string();
+        let lobby = lobbies
+            .iter_mut()
+            .find(|l| l.players().iter().any(|p| p.addr() == addr))
+            .ok_or("Lobby not found".to_string())?;
+
+        if matches!(lobby.kind(), LobbyKind::QuickPlay | LobbyKind::Ranked) {
+            return Err(format!(
+                "Lobby {} can't take local players",
+                lobby.room_id()
+            ));
+        }
+
+        Self::guard_seat_available(lobby)?;
+
+        let seat = lobby
+            .add_local_player(&addr, player)
+            .ok_or("Lobby not found".to_string())?;
+
+        Ok((lobby.room_id(), seat))
+    }
+
+    pub async fn remove_local_player(
+        &self,
+        addr: SocketAddr,
+        seat: usize,
+    ) -> Result<String, String> {
+        let mut lobbies = self.lobbies.lock().await;
+
+        let addr = addr.to_string();
+        let lobby = lobbies
+            .iter_mut()
+            .find(|l| l.players().iter().any(|p| p.addr() == addr))
+            .ok_or("Lobby not found".to_string())?;
+
+        if lobby.in_game() {
+            return Err(format!("Lobby {} already started", lobby.room_id()));
+        }
+
+        lobby.remove_local_player(&addr, seat)?;
+
+        if lobby.abort_series("PLAYER LEFT") {
+            info!("Series in room {} aborted, a player left", lobby.room_id());
+            counter!(telemetry::SERIES_OUTCOMES_TOTAL, "outcome" => "aborted").increment(1);
+        }
+
+        Ok(lobby.room_id())
+    }
+
     pub async fn update_lobby_settings(
         &self,
         addr: SocketAddr,
@@ -1032,6 +1100,7 @@ pub mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
+    use crate::constants::TEAM_DEATHMATCH_MODE;
 
     #[tokio::test]
     async fn private_lobby_gets_code_and_hides_from_browser() {
@@ -1152,6 +1221,209 @@ mod tests {
 
         lobby.set_in_game(false);
         assert!(lobby.match_players().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_players_share_their_device_and_count_once() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let state = state_with_clients(&[host, joiner]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        state
+            .add_local_player(
+                host,
+                Player::new(String::new(), String::new(), String::new(), true),
+            )
+            .await
+            .unwrap();
+        let (_, joiner_peer) = state
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap();
+
+        {
+            let lobbies = state.lobbies.lock().await;
+            let players = lobbies[0].players();
+            assert_eq!(players.len(), 3);
+            assert_eq!(players[1].room_peer_id(), players[0].room_peer_id());
+            assert!(!players[1].is_host());
+            assert_eq!(players[1].name(), "tester");
+            assert_eq!(
+                players.iter().map(|p| p.seat()).collect::<Vec<_>>(),
+                vec![0, 1, 2]
+            );
+            assert_eq!(lobbies[0].seated_devices(), 2);
+            assert_eq!(lobbies[0].players_without_choice().len(), 2);
+        }
+
+        // One measurement between the two devices settles the check (no pair of a device with itself)
+        state.record_peer_measured(host, joiner_peer).await;
+        assert!(!state.lobbies.lock().await[0].is_checking_connections());
+
+        // UpdatePlayer reaches the local player at its seat
+        let mut update = Player::new("tester 2".to_string(), String::new(), String::new(), false);
+        update.set_seat(1);
+        state.update_player(host, update).await.unwrap();
+        assert_eq!(
+            state.lobbies.lock().await[0].players()[1].name(),
+            "tester 2"
+        );
+
+        // The device's first player can't be removed as a local one; the other can
+        assert!(state.remove_local_player(host, 0).await.is_err());
+        state.remove_local_player(host, 1).await.unwrap();
+        assert_eq!(state.lobbies.lock().await[0].players().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn local_players_are_refused_when_they_cant_join() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let state = state_with_clients(&[host, joiner]).await;
+        let local = || Player::new("local".to_string(), String::new(), String::new(), false);
+
+        let mut payload = lobby_payload(LobbyKind::QuickPlay, "room-qp");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        assert!(state.add_local_player(host, local()).await.is_err());
+        state.lobbies.lock().await.clear();
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        state
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap();
+
+        // Not seated anywhere
+        assert!(state.add_local_player(test_addr(3), local()).await.is_err());
+
+        state.lobbies.lock().await[0].set_in_game(true);
+        assert!(state.add_local_player(host, local()).await.is_err());
+        state.lobbies.lock().await[0].set_in_game(false);
+
+        let max_players = state.lobbies.lock().await[0].max_players();
+        for _ in 2..max_players {
+            state.add_local_player(joiner, local()).await.unwrap();
+        }
+        assert!(state.add_local_player(host, local()).await.is_err());
+
+        // Leaving takes every player of the device with it
+        state
+            .remove_from_lobby(joiner, Departure::Left)
+            .await
+            .unwrap();
+        let lobbies = state.lobbies.lock().await;
+        assert_eq!(lobbies[0].players().len(), 1);
+        assert_eq!(lobbies[0].seated_devices(), 1);
+    }
+
+    #[tokio::test]
+    async fn removing_a_local_player_aborts_the_series() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let state = state_with_clients(&[host, joiner]).await;
+        let local = || Player::new("local".to_string(), String::new(), String::new(), false);
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        state.lobbies.lock().await[0].update_settings(
+            4,
+            GameData {
+                map_id: -1,
+                mode: TEAM_DEATHMATCH_MODE,
+                match_length: 2,
+                variants: vec![],
+                seed: 0,
+                best_of: 3,
+            },
+            vec![],
+        );
+        state.add_local_player(host, local()).await.unwrap();
+        state
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .await
+            .unwrap();
+        state.add_local_player(joiner, local()).await.unwrap();
+
+        for (addr, seat, team) in [(host, 0, 0), (host, 1, 1), (joiner, 2, 0), (joiner, 3, 1)] {
+            let mut player = local();
+            player.set_seat(seat);
+            player.set_team(team);
+            state.update_player(addr, player).await.unwrap();
+        }
+        state.lobbies.lock().await[0].start_series().unwrap();
+
+        state.remove_local_player(host, 1).await.unwrap();
+        assert!(!state.lobbies.lock().await[0].series_in_progress());
+    }
+
+    #[tokio::test]
+    async fn late_update_for_a_removed_local_player_is_dropped() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        for _ in 0..2 {
+            state
+                .add_local_player(
+                    host,
+                    Player::new("local".to_string(), String::new(), String::new(), false),
+                )
+                .await
+                .unwrap();
+        }
+        state.remove_local_player(host, 1).await.unwrap();
+
+        let mut late = Player::new("gone".to_string(), String::new(), String::new(), false);
+        late.set_seat(1);
+        state.update_player(host, late).await.unwrap();
+
+        let lobbies = state.lobbies.lock().await;
+        assert!(lobbies[0].players().iter().all(|p| p.name() != "gone"));
+    }
+
+    #[tokio::test]
+    async fn one_device_cant_start_a_series() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host).await.unwrap();
+        state
+            .add_local_player(
+                host,
+                Player::new("local".to_string(), String::new(), String::new(), false),
+            )
+            .await
+            .unwrap();
+
+        assert!(state.lobbies.lock().await[0].start_series().is_err());
+    }
+
+    #[tokio::test]
+    async fn local_players_are_not_identified_as_their_device() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+        state
+            .clients
+            .lock()
+            .await
+            .get_mut(&(host, None))
+            .unwrap()
+            .player_id = Some("owner".to_string());
+
+        let seated = vec![
+            (0, host.to_string(), "owner".to_string()),
+            (1, host.to_string(), "local".to_string()),
+        ];
+
+        assert_eq!(
+            state.identified_seats(&seated).await,
+            vec![(0, "owner".to_string(), "owner".to_string())]
+        );
     }
 
     #[tokio::test]
