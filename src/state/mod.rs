@@ -41,7 +41,7 @@ use crate::{
 
 use self::{
     client::{Client, Room},
-    lobby::{Departure, GameData, Lobby, Mod, Player},
+    lobby::{is_valid_local_players, Departure, GameData, Lobby, Mod, Player},
     series::SeriesStatus,
     signaling_state::SignalingState,
 };
@@ -435,13 +435,26 @@ impl AppState {
         lobbies
     }
 
-    pub async fn add_lobby(&self, lobby: &mut Lobby, addr: SocketAddr) -> Result<Lobby, String> {
+    pub async fn add_lobby(
+        &self,
+        lobby: &mut Lobby,
+        addr: SocketAddr,
+        local_players: usize,
+    ) -> Result<Lobby, String> {
         if self.is_draining() {
             return Err(SERVER_UPDATED_MESSAGE.to_string());
         }
 
         if lobby.kind() == LobbyKind::Ranked {
             return Err("Ranked lobbies are automated".to_string());
+        }
+
+        if !is_valid_local_players(local_players) {
+            return Err("Invalid local player count".to_string());
+        }
+
+        if local_players >= lobby.max_players() {
+            return Err("No room left for another player".to_string());
         }
 
         let mut lobbies = self.lobbies.lock().await;
@@ -472,6 +485,7 @@ impl AppState {
         host.update_addr(addr.to_string());
         host.update_room_peer_id(client.peer_id(lobby.room_id().clone()).unwrap());
         host.set_seat(0);
+        let owner = host.clone();
 
         lobby.update_seed(rand::thread_rng().gen_range(0..100000));
 
@@ -484,7 +498,7 @@ impl AppState {
             _ => None,
         };
 
-        let final_lobby = LobbyBuilder::new()
+        let mut final_lobby = LobbyBuilder::new()
             .name(lobby.name())
             .room_id(lobby.room_id())
             .max_players(lobby.max_players())
@@ -495,6 +509,8 @@ impl AppState {
             .join_code(join_code)
             .is_report_enabled(self.reports.is_some())
             .build();
+
+        final_lobby.add_guests(&owner, local_players);
 
         lobbies.push(final_lobby.clone());
 
@@ -510,6 +526,7 @@ impl AppState {
         addr: SocketAddr,
         name: String,
         is_player: bool,
+        local_players: usize,
     ) -> Result<(Lobby, String), String> {
         if self.is_draining() {
             return Err(SERVER_UPDATED_MESSAGE.to_string());
@@ -528,7 +545,9 @@ impl AppState {
             return Err("Ranked matches can't be joined".to_string());
         }
 
-        let room_peer_id = self.seat_member(lobby, addr, name, is_player).await?;
+        let room_peer_id = self
+            .seat_member(lobby, addr, name, is_player, local_players)
+            .await?;
 
         Ok((lobby.clone(), room_peer_id))
     }
@@ -539,6 +558,7 @@ impl AppState {
         addr: SocketAddr,
         name: String,
         is_player: bool,
+        local_players: usize,
     ) -> Result<(Lobby, String), String> {
         if self.is_draining() {
             return Err(SERVER_UPDATED_MESSAGE.to_string());
@@ -582,7 +602,9 @@ impl AppState {
                 "Invalid or expired code".to_string()
             })?;
 
-        let room_peer_id = self.seat_member(lobby, addr, name, is_player).await?;
+        let room_peer_id = self
+            .seat_member(lobby, addr, name, is_player, local_players)
+            .await?;
 
         Ok((lobby.clone(), room_peer_id))
     }
@@ -605,11 +627,16 @@ impl AppState {
         addr: SocketAddr,
         name: String,
         is_player: bool,
+        local_players: usize,
     ) -> Result<String, String> {
         let room_id = lobby.room_id();
 
         if is_player {
-            if lobby.is_full() {
+            if !is_valid_local_players(local_players) {
+                return Err("Invalid local player count".to_string());
+            }
+
+            if lobby.free_seats() < local_players {
                 return Err(format!("Lobby {} is full", room_id));
             }
 
@@ -650,7 +677,7 @@ impl AppState {
         );
 
         if is_player {
-            lobby.add_player(member);
+            lobby.add_player_device(member, local_players);
         } else {
             lobby.add_spectator(member);
         }
@@ -797,6 +824,10 @@ impl AppState {
 
         if lobby.in_game() {
             return Err("Lobby already started".to_string());
+        }
+
+        if lobby.peer_count() < 2 {
+            return Err("Waiting for another player".to_string());
         }
 
         if lobby.is_checking_connections() {
@@ -1039,7 +1070,7 @@ mod tests {
         let state = state_with_clients(&[host]).await;
 
         let mut payload = lobby_payload(LobbyKind::Private, "room-1");
-        let created = state.add_lobby(&mut payload, host).await.unwrap();
+        let created = state.add_lobby(&mut payload, host, 1).await.unwrap();
 
         assert_eq!(created.kind(), LobbyKind::Private);
         assert_eq!(created.join_code().unwrap().len(), codes::CODE_LEN);
@@ -1053,17 +1084,17 @@ mod tests {
         let state = state_with_clients(&[host, joiner]).await;
 
         let mut payload = lobby_payload(LobbyKind::Private, "room-1");
-        let created = state.add_lobby(&mut payload, host).await.unwrap();
+        let created = state.add_lobby(&mut payload, host, 1).await.unwrap();
         let code = created.join_code().unwrap();
 
         let err = state
-            .join_private("NOPE".to_string(), joiner, "guest".to_string(), true)
+            .join_private("NOPE".to_string(), joiner, "guest".to_string(), true, 1)
             .await
             .unwrap_err();
         assert_eq!(err, "Invalid or expired code");
 
         let throttled = state
-            .join_private(code.clone(), joiner, "guest".to_string(), true)
+            .join_private(code.clone(), joiner, "guest".to_string(), true, 1)
             .await
             .unwrap_err();
         assert_eq!(throttled, "Too many attempts, wait a moment");
@@ -1077,7 +1108,7 @@ mod tests {
 
         let sloppy = format!(" {} ", code.to_lowercase());
         let (lobby, room_peer_id) = state
-            .join_private(sloppy, joiner, "guest".to_string(), true)
+            .join_private(sloppy, joiner, "guest".to_string(), true, 1)
             .await
             .unwrap();
 
@@ -1094,17 +1125,23 @@ mod tests {
         let state = state_with_clients(&[host, joiner, watcher, qp_host]).await;
 
         let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
-        state.add_lobby(&mut payload, host).await.unwrap();
+        state.add_lobby(&mut payload, host, 1).await.unwrap();
         state.lobbies.lock().await[0].set_in_game(true);
 
         let err = state
-            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true, 1)
             .await
             .unwrap_err();
         assert_eq!(err, "Lobby room-1 already started");
 
         let (_, room_peer_id) = state
-            .join_lobby("room-1".to_string(), watcher, "watcher".to_string(), false)
+            .join_lobby(
+                "room-1".to_string(),
+                watcher,
+                "watcher".to_string(),
+                false,
+                1,
+            )
             .await
             .unwrap();
         assert!(!room_peer_id.is_empty());
@@ -1114,7 +1151,7 @@ mod tests {
         assert_eq!(lobbies[0].spectators().len(), 1);
 
         let mut qp_payload = lobby_payload(LobbyKind::QuickPlay, "room-qp");
-        state.add_lobby(&mut qp_payload, qp_host).await.unwrap();
+        state.add_lobby(&mut qp_payload, qp_host, 1).await.unwrap();
         assert_eq!(state.get_lobbies(host).await.len(), 1);
 
         state
@@ -1135,9 +1172,9 @@ mod tests {
         let state = state_with_clients(&[host, joiner]).await;
 
         let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
-        state.add_lobby(&mut payload, host).await.unwrap();
+        state.add_lobby(&mut payload, host, 1).await.unwrap();
         state
-            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true, 1)
             .await
             .unwrap();
 
@@ -1160,9 +1197,184 @@ mod tests {
         let state = state_with_clients(&[host]).await;
 
         let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
-        let created = state.add_lobby(&mut payload, host).await.unwrap();
+        let created = state.add_lobby(&mut payload, host, 1).await.unwrap();
 
         assert!(created.join_code().is_none());
         assert_eq!(state.get_lobbies(host).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_lobby_seats_guests_after_the_host() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        let created = state.add_lobby(&mut payload, host, 3).await.unwrap();
+
+        let players = created.players();
+        assert_eq!(players.len(), 3);
+        assert_eq!(
+            players.iter().map(|p| p.seat()).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(players[0].is_host() && !players[0].is_guest());
+        assert!(players[1..].iter().all(|p| p.is_guest() && !p.is_host()));
+        assert!(players
+            .iter()
+            .all(|p| p.room_peer_id() == players[0].room_peer_id()));
+        assert_eq!(players[1].name(), "tester 2");
+        assert_eq!(players[2].name(), "tester 3");
+        assert_eq!(created.peer_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_lobby_keeps_room_for_another_device() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut too_many = lobby_payload(LobbyKind::Standard, "room-1");
+        assert!(state.add_lobby(&mut too_many, host, 4).await.is_err());
+
+        let base = lobby_payload(LobbyKind::Standard, "room-2");
+        let mut duel = LobbyBuilder::new()
+            .name("tester".to_string())
+            .room_id("room-2".to_string())
+            .max_players(2)
+            .game_data(base.game_data())
+            .players(base.players())
+            .build();
+
+        assert!(state.add_lobby(&mut duel, host, 2).await.is_err());
+        assert!(state.add_lobby(&mut duel, host, 1).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn join_needs_a_free_seat_per_local_player() {
+        let host = test_addr(1);
+        let duo = test_addr(2);
+        let late = test_addr(3);
+        let state = state_with_clients(&[host, duo, late]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host, 2).await.unwrap();
+
+        let err = state
+            .join_lobby("room-1".to_string(), duo, "duo".to_string(), true, 3)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Lobby room-1 is full");
+
+        let (lobby, _) = state
+            .join_lobby("room-1".to_string(), duo, "duo".to_string(), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(lobby.players().len(), 4);
+        assert_eq!(lobby.peer_count(), 2);
+
+        let err = state
+            .join_lobby("room-1".to_string(), late, "late".to_string(), true, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Lobby room-1 is full");
+
+        let (lobby, _) = state
+            .join_lobby("room-1".to_string(), late, "late".to_string(), false, 3)
+            .await
+            .unwrap();
+        assert_eq!(lobby.spectators().len(), 1);
+        assert_eq!(lobby.players().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn update_player_targets_the_sent_seat_and_keeps_guest_names() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host, 2).await.unwrap();
+
+        let update: Player = serde_json::from_value(serde_json::json!({
+            "Name": "spoofed",
+            "ArcherIndex": 3,
+            "ArcherAltIndex": 0,
+            "Ready": true,
+            "RoomPeerId": "",
+            "IsHost": true,
+            "Seat": 1
+        }))
+        .unwrap();
+
+        state.update_player(host, update).await.unwrap();
+
+        let lobbies = state.lobbies.lock().await;
+        let players = lobbies[0].players();
+        assert!(!players[0].ready());
+        assert!(players[1].ready());
+        assert!(players[1].is_guest() && !players[1].is_host());
+        assert_eq!(players[1].name(), "tester 2");
+    }
+
+    #[test]
+    fn host_promotion_skips_guests() {
+        let mut owner = Player::new(
+            "owner".to_string(),
+            "127.0.0.2:4000".to_string(),
+            "peer-2".to_string(),
+            false,
+        );
+        let mut guest = Player::guest_from(&owner, 1);
+        guest.set_seat(0);
+        owner.set_seat(1);
+
+        let mut lobby = LobbyBuilder::new()
+            .name("qp".to_string())
+            .room_id("room-qp".to_string())
+            .game_data(lobby_payload(LobbyKind::QuickPlay, "room-qp").game_data())
+            .players(vec![guest, owner])
+            .kind(LobbyKind::QuickPlay)
+            .build();
+
+        lobby.promote_host_if_needed();
+
+        let host = lobby.players().into_iter().find(|p| p.is_host()).unwrap();
+        assert!(!host.is_guest());
+        assert_eq!(host.seat(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_needs_two_devices() {
+        let host = test_addr(1);
+        let state = state_with_clients(&[host]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host, 2).await.unwrap();
+
+        let err = state.start_lobby(host).await.unwrap_err();
+        assert_eq!(err, "Waiting for another player");
+    }
+
+    #[tokio::test]
+    async fn match_report_completes_with_one_report_per_device() {
+        let host = test_addr(1);
+        let joiner = test_addr(2);
+        let state = state_with_clients(&[host, joiner]).await;
+
+        let mut payload = lobby_payload(LobbyKind::Standard, "room-1");
+        state.add_lobby(&mut payload, host, 2).await.unwrap();
+        state
+            .join_lobby("room-1".to_string(), joiner, "joiner".to_string(), true, 1)
+            .await
+            .unwrap();
+        state.lobbies.lock().await[0].set_in_game(true);
+
+        state
+            .handle_match_report(host, 0, None, None, None, None, None)
+            .await;
+        assert_eq!(state.match_reports.lock().await.len(), 1);
+
+        state
+            .handle_match_report(joiner, 0, None, None, None, None, None)
+            .await;
+        assert!(state.match_reports.lock().await.is_empty());
     }
 }

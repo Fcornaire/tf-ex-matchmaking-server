@@ -311,17 +311,28 @@ impl AppState {
             .find(|lobby| lobby.players().iter().any(|p| p.addr() == addr.to_string()))
             .ok_or("Lobby not found".to_string())?;
 
-        let seat = lobby
-            .players()
-            .iter()
-            .find(|p| p.addr() == addr.to_string())
-            .map(|p| p.seat())
-            .ok_or("Not seated".to_string())?;
+        let seats = lobby.seats_from(&addr.to_string());
 
-        lobby
+        if seats.is_empty() {
+            return Err("Not seated".to_string());
+        }
+
+        let series = lobby
             .series_mut()
-            .ok_or("No series in this lobby".to_string())?
-            .pick_map(seat, map_id)?;
+            .ok_or("No series in this lobby".to_string())?;
+
+        let picking: Vec<usize> = seats
+            .into_iter()
+            .filter(|seat| series.side_of_seat(*seat) == series.picker_side)
+            .collect();
+
+        if picking.is_empty() {
+            return Err("Not your pick".to_string());
+        }
+
+        for seat in picking {
+            series.pick_map(seat, map_id)?;
+        }
 
         Ok(lobby.room_id())
     }
@@ -338,7 +349,11 @@ impl AppState {
                 return;
             };
 
-            if lobby.in_game() || !lobby.all_players_ready() || lobby.is_checking_connections() {
+            if lobby.in_game()
+                || !lobby.all_players_ready()
+                || lobby.is_checking_connections()
+                || lobby.peer_count() < 2
+            {
                 return;
             }
 

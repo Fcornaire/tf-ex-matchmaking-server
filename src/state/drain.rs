@@ -235,11 +235,11 @@ mod tests {
 
     async fn lobby_voting_rematch(state: &AppState, host: SocketAddr, joiner: SocketAddr) {
         state
-            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host)
+            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host, 1)
             .await
             .unwrap();
         state
-            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true, 1)
             .await
             .unwrap();
 
@@ -261,7 +261,7 @@ mod tests {
         state.start_drain().await;
 
         let refused = state
-            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host)
+            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host, 1)
             .await
             .unwrap_err();
 
@@ -271,7 +271,7 @@ mod tests {
             SERVER_UPDATED_MESSAGE
         );
         assert!(matches!(
-            state.enter_quick_play(host, "tester".to_string(), false).await,
+            state.enter_quick_play(host, "tester".to_string(), false, 1).await,
             QuickPlayOutcome::Failed { message } if message == SERVER_UPDATED_MESSAGE
         ));
     }
@@ -284,7 +284,7 @@ mod tests {
 
         assert!(matches!(
             state
-                .enter_quick_play(player, "tester".to_string(), false)
+                .enter_quick_play(player, "tester".to_string(), false, 1)
                 .await,
             QuickPlayOutcome::Queued(_)
         ));
@@ -311,6 +311,7 @@ mod tests {
             .add_lobby(
                 &mut lobby_payload(LobbyKind::Standard, "room-idle"),
                 idle_host,
+                1,
             )
             .await
             .unwrap();
@@ -319,6 +320,7 @@ mod tests {
             .add_lobby(
                 &mut lobby_payload(LobbyKind::Standard, "room-game"),
                 playing_host,
+                1,
             )
             .await
             .unwrap();
@@ -355,11 +357,11 @@ mod tests {
         let mut receiver = connect(&state, host).await;
 
         state
-            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host)
+            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host, 1)
             .await
             .unwrap();
         state
-            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true)
+            .join_lobby("room-1".to_string(), joiner, "guest".to_string(), true, 1)
             .await
             .unwrap();
         state.lobbies.lock().await[0].start_series().unwrap();
@@ -410,7 +412,7 @@ mod tests {
         assert!(state.drain_status().await.is_drained());
 
         state
-            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host)
+            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host, 1)
             .await
             .unwrap();
 
@@ -429,6 +431,7 @@ mod tests {
             .add_lobby(
                 &mut lobby_payload(LobbyKind::Standard, "room-game"),
                 playing_host,
+                1,
             )
             .await
             .unwrap();
@@ -436,6 +439,7 @@ mod tests {
             .add_lobby(
                 &mut lobby_payload(LobbyKind::Standard, "room-idle"),
                 idle_host,
+                1,
             )
             .await
             .unwrap();
