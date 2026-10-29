@@ -86,15 +86,16 @@ impl AppState {
                 return;
             };
 
-            if lobby.players().len() < 2 {
-                return;
-            }
-
             let seated: Vec<Seated> = lobby
                 .players()
                 .iter()
+                .filter(|p| !p.is_guest())
                 .map(|p| (p.seat(), p.addr(), p.name()))
                 .collect();
+
+            if seated.len() < 2 {
+                return;
+            }
 
             (
                 lobby.room_id(),

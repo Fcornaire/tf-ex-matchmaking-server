@@ -273,7 +273,10 @@ pub async fn handle_socket(
                             .await
                             .unwrap();
                     }
-                    ClientMsg::CreateLobby { mut lobby } => {
+                    ClientMsg::CreateLobby {
+                        mut lobby,
+                        local_players,
+                    } => {
                         info!("{} wants to create a lobby", who);
 
                         cloned_state_recv.exit_quick_play(ip).await;
@@ -283,7 +286,10 @@ pub async fn handle_socket(
                             .await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
-                        match cloned_state_recv.add_lobby(&mut lobby, ip).await {
+                        match cloned_state_recv
+                            .add_lobby(&mut lobby, ip, local_players)
+                            .await
+                        {
                             Ok(final_lobby) => {
                                 send_task_in_rcv
                                     .send(Message::Item(ServerMsg::CreateLobbyResponse {
@@ -311,6 +317,7 @@ pub async fn handle_socket(
                         room_id,
                         name,
                         is_player,
+                        local_players,
                     } => {
                         info!("{who} wants to join lobby {room_id}, is a player {is_player}");
 
@@ -324,7 +331,7 @@ pub async fn handle_socket(
                             .await;
 
                         match cloned_state_recv
-                            .join_lobby(room_id.clone(), ip, name, is_player)
+                            .join_lobby(room_id.clone(), ip, name, is_player, local_players)
                             .await
                         {
                             Ok((lobby, room_peer_id)) => {
@@ -368,8 +375,12 @@ pub async fn handle_socket(
                             }
                         }
                     }
-                    ClientMsg::EnterQuickPlay { name, is_wide } => {
-                        info!("{who} entered the quickplay queue (wide: {is_wide})");
+                    ClientMsg::EnterQuickPlay {
+                        name,
+                        is_wide,
+                        local_players,
+                    } => {
+                        info!("{who} entered the quickplay queue (wide: {is_wide}, local players: {local_players})");
 
                         cloned_state_recv
                             .ranking()
@@ -377,7 +388,9 @@ pub async fn handle_socket(
                             .await;
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
-                        let outcome = cloned_state_recv.enter_quick_play(ip, name, is_wide).await;
+                        let outcome = cloned_state_recv
+                            .enter_quick_play(ip, name, is_wide, local_players)
+                            .await;
 
                         let outcome_label = match &outcome {
                             QuickPlayOutcome::Queued { .. } => "queued",
@@ -544,6 +557,7 @@ pub async fn handle_socket(
                         code,
                         name,
                         is_player,
+                        local_players,
                     } => {
                         info!(
                             "{who} wants to join a private lobby by code, is a player {is_player}"
@@ -557,7 +571,7 @@ pub async fn handle_socket(
                         cloned_state_recv.leave_stale_lobbies(ip, None).await;
 
                         match cloned_state_recv
-                            .join_private(code, ip, name, is_player)
+                            .join_private(code, ip, name, is_player, local_players)
                             .await
                         {
                             Ok((lobby, room_peer_id)) => {

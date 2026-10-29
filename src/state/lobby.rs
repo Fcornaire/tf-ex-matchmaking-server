@@ -5,7 +5,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::constants::{MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
+use crate::constants::{MAX_LOCAL_PLAYERS, MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
 use crate::services::geoip::Location;
 use crate::state::connectivity::{peers_of, Connectivity, ConnectivityUpdate, PeerPair};
 use crate::state::series::Series;
@@ -289,10 +289,31 @@ impl Lobby {
     }
 
     fn player_peers(&self) -> Vec<String> {
+        let mut peers: Vec<String> = vec![];
+
+        for player in &self.players {
+            if !peers.contains(&player.room_peer_id) {
+                peers.push(player.room_peer_id.clone());
+            }
+        }
+
+        peers
+    }
+
+    pub fn peer_count(&self) -> usize {
+        self.player_peers().len()
+    }
+
+    pub fn seats_from(&self, addr: &str) -> Vec<usize> {
         self.players
             .iter()
-            .map(|p| p.room_peer_id.clone())
+            .filter(|p| p.addr == addr)
+            .map(|p| p.seat)
             .collect()
+    }
+
+    pub fn free_seats(&self) -> usize {
+        self.max_players().saturating_sub(self.players.len())
     }
 
     fn addr_of_peer(&self, peer: &str) -> Option<String> {
@@ -430,7 +451,12 @@ impl Lobby {
             return;
         }
 
-        if let Some(lowest) = self.players.iter_mut().min_by_key(|p| p.seat) {
+        if let Some(lowest) = self
+            .players
+            .iter_mut()
+            .filter(|p| !p.is_guest())
+            .min_by_key(|p| p.seat)
+        {
             lowest.is_host = true;
         }
     }
@@ -471,16 +497,29 @@ impl Lobby {
 
     pub fn players_without_choice(&self) -> Vec<String> {
         let votes = self.live_end_game_votes();
+        let mut addrs: Vec<String> = vec![];
 
-        self.players
-            .iter()
-            .map(|p| p.addr())
-            .filter(|addr| !votes.iter().any(|vote| vote.addr == *addr))
-            .collect()
+        for addr in self.players.iter().map(|p| p.addr()) {
+            if !votes.iter().any(|vote| vote.addr == addr) && !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        }
+
+        addrs
     }
 
     pub fn update_player(&mut self, addr: &str, player: Player) {
-        let Some(p) = self.players.iter_mut().find(|p| p.addr == addr) else {
+        let index = self
+            .players
+            .iter()
+            .position(|p| p.addr == addr && p.seat == player.seat)
+            .or_else(|| {
+                self.players
+                    .iter()
+                    .position(|p| p.addr == addr && !p.is_guest())
+            });
+
+        let Some(p) = index.map(|index| &mut self.players[index]) else {
             return;
         };
 
@@ -490,11 +529,19 @@ impl Lobby {
             player.custom_variants.clone()
         };
 
+        let name = if p.is_guest() {
+            std::mem::take(&mut p.name)
+        } else {
+            player.name.clone()
+        };
+
         *p = Player {
+            name,
             addr: std::mem::take(&mut p.addr),
             room_peer_id: std::mem::take(&mut p.room_peer_id),
             is_host: p.is_host,
             seat: p.seat,
+            local_index: p.local_index,
             custom_variants,
             ..player
         };
@@ -511,6 +558,19 @@ impl Lobby {
         self.membership_changed_at = Some(Instant::now());
         self.is_connectivity_settled = false;
         self.refresh_checking_connections();
+    }
+
+    pub fn add_guests(&mut self, owner: &Player, local_players: usize) {
+        for local_index in 1..local_players {
+            self.add_player(Player::guest_from(owner, local_index));
+        }
+    }
+
+    pub fn add_player_device(&mut self, owner: Player, local_players: usize) {
+        let guests_owner = owner.clone();
+
+        self.add_player(owner);
+        self.add_guests(&guests_owner, local_players);
     }
 
     fn first_free_seat(&self) -> usize {
@@ -543,7 +603,7 @@ impl Lobby {
     pub fn update_settings(&mut self, max_players: usize, game_data: GameData, mods: Vec<Mod>) {
         let seed = self.game_data.seed;
 
-        self.max_players = max_players.clamp(self.players.len().max(2), MAX_PLAYERS);
+        self.max_players = max_players.clamp(self.min_max_players(), MAX_PLAYERS);
         self.game_data = game_data;
         self.game_data.seed = seed;
         self.mods = mods;
@@ -630,6 +690,17 @@ impl Lobby {
     pub fn is_full(&self) -> bool {
         self.players.len() >= self.max_players()
     }
+
+    fn min_max_players(&self) -> usize {
+        let largest_device = self
+            .players
+            .iter()
+            .map(|p| p.local_index + 1)
+            .max()
+            .unwrap_or(1);
+
+        self.players.len().max(largest_device + 1).max(2)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,6 +747,12 @@ pub struct Player {
     platform: String,
     #[serde(default)]
     input_delay: Option<i32>,
+    #[serde(default)]
+    local_index: usize,
+}
+
+pub fn is_valid_local_players(local_players: usize) -> bool {
+    (1..=MAX_LOCAL_PLAYERS).contains(&local_players)
 }
 
 fn neutral_team() -> i32 {
@@ -702,11 +779,37 @@ impl Player {
             have_modified_game_files: false,
             platform: String::new(),
             input_delay: None,
+            local_index: 0,
         }
     }
 
     pub fn seat(&self) -> usize {
         self.seat
+    }
+
+    pub fn local_index(&self) -> usize {
+        self.local_index
+    }
+
+    pub fn is_guest(&self) -> bool {
+        self.local_index > 0
+    }
+
+    pub fn guest_from(owner: &Player, local_index: usize) -> Self {
+        let mut guest = Player::new(
+            format!("{} {}", owner.name, local_index + 1),
+            owner.addr.clone(),
+            owner.room_peer_id.clone(),
+            false,
+        );
+
+        guest.local_index = local_index;
+        guest.custom_variants = owner.custom_variants.clone();
+        guest.use_instant_replay = owner.use_instant_replay;
+        guest.have_modified_game_files = owner.have_modified_game_files;
+        guest.platform = owner.platform.clone();
+
+        guest
     }
 
     pub fn ready(&self) -> bool {

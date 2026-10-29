@@ -141,11 +141,15 @@ pub enum ClientMsg {
     },
     CreateLobby {
         lobby: Lobby,
+        #[serde(default = "default_local_player")]
+        local_players: usize,
     },
     JoinLobby {
         room_id: String,
         name: String,
         is_player: bool,
+        #[serde(default = "default_local_player")]
+        local_players: usize,
     },
     UpdatePlayer {
         player: Player,
@@ -184,11 +188,15 @@ pub enum ClientMsg {
         code: String,
         name: String,
         is_player: bool,
+        #[serde(default = "default_local_player")]
+        local_players: usize,
     },
     EnterQuickPlay {
         name: String,
         #[serde(default)]
         is_wide: bool,
+        #[serde(default = "default_local_player")]
+        local_players: usize,
     },
     ExitQuickPlay {},
     EnterRanked {
@@ -296,4 +304,8 @@ pub struct PlayerHistory {
     pub best_towers: Vec<TowerPlays>,
     pub awards: Vec<AwardCount>,
     pub stats: BTreeMap<String, StatTotal>,
+}
+
+fn default_local_player() -> usize {
+    1
 }

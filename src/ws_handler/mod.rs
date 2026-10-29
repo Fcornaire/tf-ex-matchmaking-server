@@ -62,7 +62,7 @@ mod tests {
         let state = state_with_clients(&[host]).await;
 
         state
-            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host)
+            .add_lobby(&mut lobby_payload(LobbyKind::Standard, "room-1"), host, 1)
             .await
             .unwrap();
 
