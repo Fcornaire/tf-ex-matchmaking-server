@@ -1,0 +1,61 @@
+name: Release
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      ARCHIVE: tf-ex-matchmaking-server-${{ github.ref_name }}-windows-x64.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path target/release/tf-ex-matchmaking-server.exe, README.md, LICENSE -DestinationPath $env:ARCHIVE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ${{ env.ARCHIVE }}
+
+  linux:
+    strategy:
+      matrix:
+        ubuntu: ["24.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    env:
+      ARCHIVE: tf-ex-matchmaking-server-${{ github.ref_name }}-linux-x64-ubuntu${{ matrix.ubuntu }}.zip
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenSSL headers
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: zip -j "$ARCHIVE" target/release/tf-ex-matchmaking-server README.md LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
