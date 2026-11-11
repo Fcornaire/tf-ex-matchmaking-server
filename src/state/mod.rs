@@ -462,11 +462,17 @@ impl AppState {
             return Err("Ranked lobbies are automated".to_string());
         }
 
+        let is_spectator_hosted = lobby.is_spectator_hosted();
+
+        if is_spectator_hosted && lobby.kind() != LobbyKind::Private {
+            return Err("Only private lobbies can be hosted by a spectator".to_string());
+        }
+
         if !is_valid_local_players(local_players) {
             return Err("Invalid local player count".to_string());
         }
 
-        if local_players >= lobby.max_players() {
+        if !is_spectator_hosted && local_players >= lobby.max_players() {
             return Err("No room left for another player".to_string());
         }
 
@@ -516,14 +522,28 @@ impl AppState {
             .room_id(lobby.room_id())
             .max_players(lobby.max_players())
             .game_data(lobby.game_data())
-            .players(vec![host])
+            .players(if is_spectator_hosted {
+                vec![]
+            } else {
+                vec![host]
+            })
             .mods(lobby.mods())
             .kind(lobby.kind())
             .join_code(join_code)
             .is_report_enabled(self.reports.is_some())
+            .is_spectator_hosted(is_spectator_hosted)
             .build();
 
-        final_lobby.add_guests(&owner, local_players);
+        if is_spectator_hosted {
+            final_lobby.add_spectator(Player::new(
+                owner.name(),
+                owner.addr(),
+                owner.room_peer_id(),
+                false,
+            ));
+        } else {
+            final_lobby.add_guests(&owner, local_players);
+        }
 
         lobbies.push(final_lobby.clone());
 
@@ -691,6 +711,7 @@ impl AppState {
 
         if is_player {
             lobby.add_player_device(member, local_players);
+            lobby.promote_host_if_needed();
         } else {
             lobby.add_spectator(member);
         }
@@ -930,13 +951,13 @@ impl AppState {
         let mut lobbies = self.lobbies.lock().await;
 
         let count = lobbies.len();
-        lobbies.retain(|l| !l.players().is_empty());
+        lobbies.retain(|l| !l.players().is_empty() || l.is_awaiting_players());
         if count != lobbies.len() {
             info!("Purged {} empty lobbies", count - lobbies.len());
         }
 
         let count = lobbies.len();
-        lobbies.retain(|l| l.players().iter().any(|p| p.is_host()));
+        lobbies.retain(|l| !l.is_hostless());
 
         if count != lobbies.len() {
             info!("Purged {} lobbies with no host", count - lobbies.len());
@@ -1049,7 +1070,7 @@ pub mod test_support {
         state
     }
 
-    pub fn lobby_payload(kind: LobbyKind, room_id: &str) -> Lobby {
+    pub fn lobby_builder(kind: LobbyKind, room_id: &str) -> LobbyBuilder {
         LobbyBuilder::new()
             .name("tester".to_string())
             .room_id(room_id.to_string())
@@ -1068,7 +1089,10 @@ pub mod test_support {
                 true,
             )])
             .kind(kind)
-            .build()
+    }
+
+    pub fn lobby_payload(kind: LobbyKind, room_id: &str) -> Lobby {
+        lobby_builder(kind, room_id).build()
     }
 }
 
@@ -1127,6 +1151,57 @@ mod tests {
 
         assert!(!room_peer_id.is_empty());
         assert_eq!(lobby.players().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn only_private_lobbies_can_be_spectator_hosted() {
+        let owner = test_addr(1);
+        let state = state_with_clients(&[owner]).await;
+
+        let mut payload = lobby_builder(LobbyKind::Standard, "room-1")
+            .is_spectator_hosted(true)
+            .build();
+
+        assert!(state.add_lobby(&mut payload, owner, 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn first_player_joining_a_spectator_hosted_lobby_becomes_host() {
+        let owner = test_addr(1);
+        let first = test_addr(2);
+        let second = test_addr(3);
+        let state = state_with_clients(&[owner, first, second]).await;
+
+        let mut payload = lobby_builder(LobbyKind::Private, "room-1")
+            .is_spectator_hosted(true)
+            .build();
+        let code = state
+            .add_lobby(&mut payload, owner, 1)
+            .await
+            .unwrap()
+            .join_code()
+            .unwrap();
+
+        let (lobby, _) = state
+            .join_private(code.clone(), first, "first".to_string(), true, 1)
+            .await
+            .unwrap();
+        assert_eq!(lobby.players().len(), 1);
+        assert!(lobby.players()[0].is_host());
+        assert_eq!(lobby.players()[0].seat(), 0);
+
+        let (lobby, _) = state
+            .join_private(code, second, "second".to_string(), true, 1)
+            .await
+            .unwrap();
+        let hosts: Vec<_> = lobby
+            .players()
+            .into_iter()
+            .filter(|p| p.is_host())
+            .collect();
+        assert_eq!(lobby.players().len(), 2);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].addr(), first.to_string());
     }
 
     #[tokio::test]

@@ -103,6 +103,8 @@ pub struct Lobby {
     is_checking_connections: bool,
     #[serde(default)]
     is_report_enabled: bool,
+    #[serde(default)]
+    is_spectator_hosted: bool,
     #[serde(skip)]
     origin: Option<Location>,
     #[serde(skip)]
@@ -164,6 +166,18 @@ impl Lobby {
 
     pub fn join_code(&self) -> Option<String> {
         self.join_code.clone()
+    }
+
+    pub fn is_spectator_hosted(&self) -> bool {
+        self.is_spectator_hosted
+    }
+
+    pub fn is_awaiting_players(&self) -> bool {
+        self.is_spectator_hosted && self.players.is_empty() && !self.spectators.is_empty()
+    }
+
+    pub fn is_hostless(&self) -> bool {
+        !self.is_awaiting_players() && !self.players.iter().any(|p| p.is_host)
     }
 
     pub fn origin(&self) -> Option<Location> {
@@ -448,7 +462,8 @@ impl Lobby {
     }
 
     pub fn promote_host_if_needed(&mut self) {
-        if !matches!(self.kind, LobbyKind::QuickPlay | LobbyKind::Ranked)
+        if !(matches!(self.kind, LobbyKind::QuickPlay | LobbyKind::Ranked)
+            || self.is_spectator_hosted)
             || self.players.is_empty()
             || self.players.iter().any(|p| p.is_host)
         {
@@ -869,6 +884,7 @@ pub struct LobbyBuilder {
     join_code: Option<String>,
     origin: Option<Location>,
     is_report_enabled: bool,
+    is_spectator_hosted: bool,
 }
 
 impl LobbyBuilder {
@@ -926,6 +942,11 @@ impl LobbyBuilder {
         self
     }
 
+    pub fn is_spectator_hosted(mut self, is_spectator_hosted: bool) -> Self {
+        self.is_spectator_hosted = is_spectator_hosted;
+        self
+    }
+
     pub fn build(self) -> Lobby {
         Lobby {
             name: self.name.expect("lobby name is required"),
@@ -945,6 +966,7 @@ impl LobbyBuilder {
             relayed_pairs: vec![],
             is_checking_connections: false,
             is_report_enabled: self.is_report_enabled,
+            is_spectator_hosted: self.is_spectator_hosted,
             origin: self.origin,
             membership_changed_at: None,
             all_ready_since: None,
