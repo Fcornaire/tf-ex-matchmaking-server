@@ -423,7 +423,7 @@ impl AppState {
             .iter()
             .filter(|l| l.players().iter().any(|p| p.is_host()))
             .filter(|l| match l.kind() {
-                LobbyKind::Standard => !l.is_full() || l.is_live(),
+                LobbyKind::Standard => true,
                 LobbyKind::QuickPlay => l.in_game(),
                 LobbyKind::Ranked => l.is_live(),
                 LobbyKind::Private => false,
