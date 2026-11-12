@@ -5,7 +5,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::constants::{MAX_LOCAL_PLAYERS, MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
+use crate::constants::{LAST_MAN_STANDING_MODE, MAX_LOCAL_PLAYERS, MAX_PLAYERS, SERIES_TEAM_SIZE, TEAM_DEATHMATCH_MODE};
 use crate::services::geoip::Location;
 use crate::state::connectivity::{peers_of, Connectivity, ConnectivityUpdate, PeerPair};
 use crate::state::series::Series;
@@ -726,13 +726,35 @@ impl Lobby {
 #[serde(rename_all = "PascalCase")]
 pub struct GameData {
     pub map_id: i32,
-    pub mode: i32,
+    /// The game mode's id: "LastManStanding", "HeadHunters", "TeamDeathmatch", or a mod's "ModName/GameMode"
+    #[serde(deserialize_with = "game_mode_id")]
+    pub mode: String,
     pub match_length: i32,
     pub variants: Vec<String>,
     pub seed: i32,
     /// 0 for single match; 1, 3, 5, 7 for the series length
     #[serde(default)]
     pub best_of: i32,
+}
+
+/// A game mode id, or the `TowerFall.Modes` number older clients send
+fn game_mode_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Mode {
+        Id(String),
+        Number(i32),
+    }
+
+    Ok(match Mode::deserialize(deserializer)? {
+        Mode::Id(id) => id,
+        Mode::Number(4) => "HeadHunters".to_string(),
+        Mode::Number(5) => TEAM_DEATHMATCH_MODE.to_string(),
+        Mode::Number(_) => LAST_MAN_STANDING_MODE.to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -975,5 +997,23 @@ impl LobbyBuilder {
             connection_switched_at: None,
             is_connectivity_settled: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GameData;
+
+    fn mode_of(mode: &str) -> String {
+        let json = format!(r#"{{"MapId":-1,"Mode":{mode},"MatchLength":2,"Variants":[],"Seed":0}}"#);
+        serde_json::from_str::<GameData>(&json).unwrap().mode
+    }
+
+    #[test]
+    fn game_mode_id_from_id_or_number() {
+        assert_eq!(mode_of(r#""Soccer/SOCCER""#), "Soccer/SOCCER");
+        assert_eq!(mode_of("3"), "LastManStanding");
+        assert_eq!(mode_of("4"), "HeadHunters");
+        assert_eq!(mode_of("5"), "TeamDeathmatch");
     }
 }
