@@ -66,11 +66,21 @@ pub enum Departure {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+pub struct FavoriteArcher {
+    pub archer: i32,
+    pub archer_alt: i32,
+    pub custom_archer_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct RankedSeat {
     pub seat: usize,
     pub rating: i32,
     pub provisional: bool,
     pub delta: Option<i32>,
+    #[serde(default)]
+    pub favorite_archer: Option<FavoriteArcher>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

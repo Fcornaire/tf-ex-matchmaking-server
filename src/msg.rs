@@ -69,6 +69,13 @@ pub enum ServerMsg {
         room_peer_id: String,
     },
     RankedReady {},
+    RankedConfirm {
+        seconds: u64,
+        is_decline_free: bool,
+    },
+    RankedNoContestOffered {
+        seconds: u64,
+    },
     SpectatorJoined {
         room_peer_id: String,
     },
@@ -108,6 +115,8 @@ impl ServerMsg {
             Self::RankedStatus { .. } => "RankedStatus",
             Self::RankedMatchFound { .. } => "RankedMatchFound",
             Self::RankedReady {} => "RankedReady",
+            Self::RankedConfirm { .. } => "RankedConfirm",
+            Self::RankedNoContestOffered { .. } => "RankedNoContestOffered",
             Self::SpectatorJoined { .. } => "SpectatorJoined",
             Self::SkinChunk { .. } => "SkinChunk",
             Self::KickedFromLobby { .. } => "KickedFromLobby",
@@ -124,6 +133,14 @@ pub struct SkinChunk {
     pub chunk_index: u32,
     pub chunk_count: u32,
     pub data: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PingReport {
+    pub rtt: i32,
+    pub spike: i32,
+    pub loss_percent: i32,
+    pub samples: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +222,15 @@ pub enum ClientMsg {
         is_wide: bool,
     },
     ExitRanked {},
+    RankedPingReport {
+        rtt: i32,
+        spike: i32,
+        loss_percent: i32,
+        samples: i32,
+    },
+    RankedAccept {},
+    RankedNoContestOffer {},
+    RankedNoContestAccept {},
     SkinChunk {
         chunk: SkinChunk,
     },
