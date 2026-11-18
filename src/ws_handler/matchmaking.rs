@@ -24,7 +24,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     constants::KEEP_ALIVE_INTERVAL,
     extensions::{clients::ClientsExts, str::StrExts},
-    msg::{ClientMsg, ServerMsg},
+    msg::{ClientMsg, PingReport, ServerMsg},
     state::{
         lobby::{Departure, Lobby},
         AppState, QuickPlayOutcome,
@@ -552,6 +552,50 @@ pub async fn handle_socket(
                             }))
                             .await
                             .unwrap();
+                    }
+                    ClientMsg::RankedPingReport {
+                        rtt,
+                        spike,
+                        loss_percent,
+                        samples,
+                    } => {
+                        cloned_state_recv
+                            .ranking()
+                            .report_ranked_ping(
+                                &cloned_state_recv,
+                                ip,
+                                PingReport {
+                                    rtt,
+                                    spike,
+                                    loss_percent,
+                                    samples,
+                                },
+                            )
+                            .await;
+                    }
+                    ClientMsg::RankedAccept {} => {
+                        info!("{} accepted the ranked match", who);
+
+                        cloned_state_recv
+                            .ranking()
+                            .accept_ranked(&cloned_state_recv, ip)
+                            .await;
+                    }
+                    ClientMsg::RankedNoContestOffer {} => {
+                        info!("{} offers a no contest for the ranked series", who);
+
+                        cloned_state_recv
+                            .ranking()
+                            .offer_ranked_no_contest(&cloned_state_recv, ip)
+                            .await;
+                    }
+                    ClientMsg::RankedNoContestAccept {} => {
+                        info!("{} accepts the no contest for the ranked series", who);
+
+                        cloned_state_recv
+                            .ranking()
+                            .accept_ranked_no_contest(&cloned_state_recv, ip)
+                            .await;
                     }
                     ClientMsg::JoinPrivate {
                         code,

@@ -3,7 +3,7 @@ use std::{any::Any, collections::HashMap, fmt::Debug, net::SocketAddr, sync::Arc
 use async_trait::async_trait;
 
 use crate::{
-    msg::{LeaderboardView, PlayerProfile},
+    msg::{LeaderboardView, PingReport, PlayerProfile},
     state::{
         client::Client,
         lobby::{Departure, Lobby},
@@ -57,6 +57,14 @@ pub trait Ranking: Send + Sync + Debug {
     }
 
     async fn exit_ranked(&self, _state: &AppState, _addr: SocketAddr) {}
+
+    async fn report_ranked_ping(&self, _state: &AppState, _addr: SocketAddr, _report: PingReport) {}
+
+    async fn accept_ranked(&self, _state: &AppState, _addr: SocketAddr) {}
+
+    async fn offer_ranked_no_contest(&self, _state: &AppState, _addr: SocketAddr) {}
+
+    async fn accept_ranked_no_contest(&self, _state: &AppState, _addr: SocketAddr) {}
 
     async fn leaderboard(&self, _state: &AppState, _player_id: Option<String>) -> LeaderboardView {
         LeaderboardView::default()
