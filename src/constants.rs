@@ -33,11 +33,11 @@ pub const MAX_RELAYED_SPECTATORS: usize = 2;
 /// Vanilla versus towers eligible in a series
 pub const SERIES_TOWER_COUNT: i32 = 16;
 
-/// `TowerFall.Modes.TeamDeathmatch`
-pub const TEAM_DEATHMATCH_MODE: i32 = 5;
+/// Team Deathmatch's game mode id
+pub const TEAM_DEATHMATCH_MODE: &str = "TeamDeathmatch";
 
-/// `TowerFall.Modes.LastManStanding`
-pub const LAST_MAN_STANDING_MODE: i32 = 3;
+/// Last Man Standing's game mode id
+pub const LAST_MAN_STANDING_MODE: &str = "LastManStanding";
 
 pub const SERIES_TEAM_SIZE: usize = 2;
 

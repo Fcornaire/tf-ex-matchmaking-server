@@ -36,7 +36,7 @@ pub struct PendingReports {
     pub reports: Vec<MatchReport>,
     pub duration_secs: Option<f64>,
     pub map_id: i32,
-    pub mode: i32,
+    pub mode: String,
     pub created_at: Instant,
 }
 
@@ -103,7 +103,7 @@ impl AppState {
                 seated,
                 lobby.match_duration_secs(),
                 lobby.game_data().map_id,
-                lobby.game_data().mode,
+                lobby.game_data().mode.clone(),
             )
         };
 

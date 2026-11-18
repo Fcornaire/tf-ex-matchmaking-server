@@ -225,7 +225,7 @@ impl AppState {
                 .room_id(room_id)
                 .game_data(GameData {
                     map_id: -1,
-                    mode: 3,
+                    mode: crate::constants::LAST_MAN_STANDING_MODE.to_string(),
                     match_length: 2,
                     variants: vec![],
                     seed: rand::thread_rng().gen_range(0..100000),

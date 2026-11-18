@@ -1076,7 +1076,7 @@ pub mod test_support {
             .room_id(room_id.to_string())
             .game_data(GameData {
                 map_id: -1,
-                mode: 3,
+                mode: crate::constants::LAST_MAN_STANDING_MODE.to_string(),
                 match_length: 2,
                 variants: vec![],
                 seed: 0,
